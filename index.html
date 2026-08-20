@@ -251,7 +251,19 @@
   .tile .tn{flex:1;min-width:0;font-size:14.5px;font-weight:700;color:var(--text);
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .tile .tc{font-size:12px;font-weight:700;color:var(--mute);flex:0 0 auto}
-  .tile.empty-t{opacity:.82}
+  .tile.empty-t{opacity:.72;background:#fafbfc}
+  .tile.empty-t .tn{color:var(--mute)}
+  .tile .soon{
+    font-size:11px;font-weight:800;color:var(--mute);flex:0 0 auto;
+    background:#eef0f4;border-radius:999px;padding:3px 8px;letter-spacing:-.2px
+  }
+  .homehint{
+    margin:14px 2px 0;font-size:12.5px;color:var(--mute);text-align:center;letter-spacing:-.2px
+  }
+  .dnote{
+    margin:12px 4px 2px;font-size:11.5px;line-height:1.5;color:var(--mute);
+    background:#f6f7f9;border-radius:9px;padding:9px 10px
+  }
   .tile .swatch{width:10px;height:26px;border-radius:4px;flex:0 0 auto;background:var(--mute)}
   .tthumb{
     width:38px;height:38px;border-radius:9px;flex:0 0 auto;object-fit:cover;
@@ -814,7 +826,7 @@ function presetByUrl(u){
 
 // 시드(기본 카테고리·제품)를 바꿀 때마다 올린다.
 // 저장된 데이터의 seedVersion이 이보다 낮으면 새 시드로 교체하고, 이전 데이터는 백업해 둔다.
-var SEED_VERSION = 6;
+var SEED_VERSION = 7;
 
 /* 배포용 파일에 현재 내용을 통째로 심어두는 자리.
    '배포용 파일 내보내기'를 누르면 이 줄이 실제 데이터로 바뀐 새 HTML이 만들어진다. */
@@ -839,7 +851,13 @@ function groupLabel(k){
 }
 var SEED_CATS = [
   ["기초화장품","type"],
-  ["메이크업/그루밍도구","type"],
+  ["쿠션&파운데이션","type"],
+  ["파우더&컨실러","type"],
+  ["섀도우","type"],
+  ["블러셔","type"],
+  ["립","type"],
+  ["하이라이터&쉐딩","type"],
+  ["메이크업&그루밍도구","type"],
   ["미용보조기구","type"],
   ["봄라이트","warm"],["봄클리어","warm"],["봄스트롱","warm"],
   ["가을뮤트","warm"],["가을스트롱","warm"],["가을딥","warm"],
@@ -1061,11 +1079,25 @@ function seedData(){
   var byName={};
   cats.forEach(function(c){ byName[c.name]=c.id; });
 
-  var makeupId = byName["메이크업/그루밍도구"];
+  // PDF에서 뽑은 제품 종류(kind)를 새 제품군 분류로 옮긴다
+  var KIND_TO_CAT = {
+    "쿠션":"쿠션&파운데이션",
+    "파운데이션":"쿠션&파운데이션",
+    "파우더":"파우더&컨실러",
+    "컨실러":"파우더&컨실러",
+    "아이섀도우":"섀도우",
+    "섀도우":"섀도우",
+    "블러셔":"블러셔",
+    "립":"립",
+    "립밤":"립",
+    "하이라이터":"하이라이터&쉐딩",
+    "쉐딩":"하이라이터&쉐딩"
+  };
   var products = PRODUCT_SEED.map(function(row, i){
     var name=row[0], tone=row[1], kind=row[2], isMale=row[3]===1;
     var ids=[];
-    if(makeupId) ids.push(makeupId);
+    var typeId = byName[KIND_TO_CAT[kind] || ""];
+    if(typeId) ids.push(typeId);
     if(byName[tone]) ids.push(byName[tone]);
     var brand = name.split(" ")[0];
     return {
@@ -1560,7 +1592,8 @@ function renderMenu(){
   }
   h += item(hrefFor("home"), "홈", null, route.view==="home");
 
-  ["type","warm","cool","etc"].forEach(function(g){
+  // 퍼스널컬러(warm/cool)는 분류가 아니라 각 제품군 안의 필터로만 쓴다
+  ["type","etc"].forEach(function(g){
     var cs=catsInGroup(g);
     if(!cs.length) return;
     h += '<div class="dgroup">'+esc(groupLabel(g))+'</div>';
@@ -1569,6 +1602,9 @@ function renderMenu(){
                 route.view==="cat" && route.id===c.id, c);
     });
   });
+  if(catsInGroup("warm").length || catsInGroup("cool").length){
+    h += '<div class="dnote">퍼스널컬러 타입과 남성 추천은 각 분류 안에서 필터로 선택합니다</div>';
+  }
 
   if(uncatCount()) h += item(hrefFor("uncat"), "미분류", uncatCount(), route.view==="uncat");
   // '전체 제품 보기'는 항상 가장 마지막
@@ -1603,7 +1639,8 @@ function tileHtml(href, name, n, cat, withThumb){
   return '<a class="tile'+(n?"":" empty-t")+'" href="'+esc(href)+'">'+
     (thumb?'<img class="tthumb" src="'+esc(thumb)+'" alt="" loading="lazy" onerror="this.remove()">'
           :(cat?chipHtml(cat,"lg"):""))+
-    '<span class="tn">'+esc(name)+'</span></a>';
+    '<span class="tn">'+esc(name)+'</span>'+
+    (cat && !n ? '<span class="soon">준비 중</span>' : '')+'</a>';
 }
 function seasonOf(c){
   var n=c.name;
@@ -1618,29 +1655,14 @@ function renderHome(){
   var counts=countsByCat();
   var h='<div style="height:22px"></div>';
 
-  // 제품군 — 한 줄에 3개
+  // 제품군 — 한 줄에 3개. 퍼스널컬러·맨즈는 각 분류 안의 필터로 좁힌다.
   var types=catsInGroup("type");
   if(types.length){
     h += '<div class="tiles t3">'+
       types.map(function(c){ return tileHtml(hrefFor("cat",c.id), c.name, counts[c.id]||0, c, true); }).join("")+
     '</div>';
+    h += '<div class="homehint">각 분류에 들어가면 퍼스널컬러 타입과 남성 추천으로 좁혀볼 수 있습니다</div>';
   }
-
-  // 퍼스널컬러 — 웜톤(봄→가을) / 쿨톤(여름→겨울)
-  [["warm",["봄","가을"]],["cool",["여름","겨울"]]].forEach(function(pair){
-    var gk=pair[0], order=pair[1].concat(["기타"]);
-    var cs=catsInGroup(gk);
-    if(!cs.length) return;
-    h += '<div class="sectitle">'+esc(groupLabel(gk))+'</div>';
-    var grouped={};
-    cs.forEach(function(c){ (grouped[seasonOf(c)]=grouped[seasonOf(c)]||[]).push(c); });
-    order.forEach(function(sname){
-      if(!grouped[sname]) return;
-      h += '<div class="seasonrow"><div class="seasonlabel">'+esc(sname)+'</div><div class="tiles t3">'+
-        grouped[sname].map(function(c){ return tileHtml(hrefFor("cat",c.id), c.name, counts[c.id]||0, c); }).join("")+
-      '</div></div>';
-    });
-  });
 
   var etc=catsInGroup("etc");
   if(etc.length){
@@ -1701,6 +1723,8 @@ function renderList(){
   var subGroups = [];
   if(route.view==="cat" && cat){
     subGroups = (cat.group==="warm" || cat.group==="cool") ? ["type"] : ["warm","cool"];
+  } else if(route.view==="all" || route.view==="search" || route.view==="men"){
+    subGroups = ["type","warm","cool"];
   }
   subGroups.forEach(function(gk){
     var subs = catsInGroup(gk);
