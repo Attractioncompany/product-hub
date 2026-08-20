@@ -258,8 +258,12 @@
     background:#eef0f4;border-radius:999px;padding:3px 8px;letter-spacing:-.2px
   }
   .homehint{
-    margin:14px 2px 0;font-size:12.5px;color:var(--mute);text-align:center;letter-spacing:-.2px
+    margin:20px 0 14px;padding:12px 14px;text-align:center;letter-spacing:-.2px;
+    font-size:14.5px;font-weight:600;color:var(--brand-d);line-height:1.5;
+    background:var(--brand-soft);border:1px solid #d5e0f4;border-radius:12px
   }
+  .homehint b{font-weight:800}
+  @media(max-width:560px){ .homehint{font-size:13.5px;padding:11px 12px} }
   .dnote{
     margin:12px 4px 2px;font-size:11.5px;line-height:1.5;color:var(--mute);
     background:#f6f7f9;border-radius:9px;padding:9px 10px
@@ -323,6 +327,10 @@
   .badge{
     display:inline-block;font-size:11.5px;font-weight:700;color:var(--brand-d);
     background:var(--brand-soft);border-radius:6px;padding:2px 7px;align-self:flex-start
+  }
+  .pbrand{
+    font-size:12px;font-weight:800;color:var(--brand-d);letter-spacing:-.01em;
+    margin:0 0 3px;line-height:1.3;text-transform:none
   }
   .pname{font-size:15.5px;font-weight:700;margin:0;letter-spacing:-.01em;line-height:1.4}
   .pdesc{margin:0;font-size:13.5px;color:var(--sub);white-space:pre-wrap;word-break:break-word}
@@ -426,6 +434,22 @@
     font-size:13px;font-weight:700;cursor:grab
   }
   code.k{background:#f1f2f5;border-radius:5px;padding:1px 5px;font-size:12px}
+  .bmkbox{background:var(--brand-soft);border:1px solid #d5e0f4;border-radius:12px;padding:13px 14px}
+  .bmkhelp{margin-top:9px;border-top:1px dashed var(--line2);padding-top:9px}
+  .bmkhelp summary{
+    cursor:pointer;font-size:12.5px;font-weight:800;color:var(--brand-d);
+    list-style:none;display:flex;align-items:center;gap:5px
+  }
+  .bmkhelp summary::-webkit-details-marker{display:none}
+  .bmkhelp summary::before{content:"▸";font-size:11px;transition:transform .15s}
+  .bmkhelp[open] summary::before{transform:rotate(90deg)}
+  .bmkhelp summary span{font-weight:600;color:var(--mute)}
+  .bmkdrag{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:4px 0 2px}
+  .bmkdrag span{font-size:12px;color:var(--text)}
+  .bmkwarn{margin-top:6px;font-size:11.5px;color:var(--mute)}
+  .bmksteps{margin-top:9px;font-size:12.5px;line-height:1.65;color:var(--text)}
+  .bmksteps ol{margin:6px 0 6px;padding-left:19px}
+  .bmksteps li{margin:2px 0}
   .imgprev{
     width:82px;height:82px;border-radius:10px;border:1px solid var(--line);
     background:#f1f3f6;object-fit:cover;display:block
@@ -468,7 +492,7 @@
     <span class="vbar"></span>
     <div class="brand">
       <h1 id="siteTitle">제품 추천 허브</h1>
-      <p id="siteSub">강의에서 소개한 제품을 한곳에 모았습니다</p>
+      <p id="siteSub" style="display:none"></p>
     </div>
     <button class="iconbtn" id="btnMenu" aria-label="메뉴 열기" aria-expanded="false">
       <span class="bars"><i></i><i></i><i></i></span><span class="mlabel">메뉴</span>
@@ -560,10 +584,34 @@
           이 창 어디서나 <code class="k">Ctrl</code>+<code class="k">V</code> — 복사한 <b>이미지</b>, <b>이미지 주소</b>,
           <b>상품 주소</b>, 북마클릿으로 담은 <b>상품 정보</b>를 알아서 구분해 채웁니다.
         </div>
+        <details class="bmkhelp" id="bmkHelp">
+          <summary>쿠팡·올리브영 상품정보 한 번에 가져오는 법 <span>(북마클릿)</span></summary>
+          <div class="bmksteps">
+            <div class="bmkdrag">
+              <a class="bmk" id="bmkLink2" href="#" onclick="return false">＋ 상품정보 담기</a>
+              <span>← 이 버튼을 브라우저 <b>북마크바로 드래그</b>해 두세요 (처음 한 번만)</span>
+            </div>
+            <ol>
+              <li>쿠팡·올리브영 등에서 <b>상품 페이지를 엽니다</b></li>
+              <li>북마크바의 <b>＋ 상품정보 담기</b> 클릭 → “복사했습니다” 알림</li>
+              <li>이 창으로 돌아와 <code class="k">Ctrl</code>+<code class="k">V</code>
+                (맥은 <code class="k">⌘</code>+<code class="k">V</code>)</li>
+            </ol>
+            브랜드·제품명·설명·가격·이미지·상품주소가 한 번에 채워집니다.
+            이미 값이 있는 칸은 덮어쓰지 않습니다.
+            <div class="bmkwarn">북마크바가 안 보이면 <code class="k">⌘</code>+<code class="k">⇧</code>+<code class="k">B</code>
+              (윈도우는 <code class="k">Ctrl</code>+<code class="k">Shift</code>+<code class="k">B</code>)</div>
+          </div>
+        </details>
       </div>
       <div class="field">
-        <label>제품명 <span class="hint">필수</span></label>
-        <input id="f_name" placeholder="예) 시카 크림 50ml">
+        <label>브랜드 <span class="hint">선택 · 예) 롬앤</span></label>
+        <input id="f_brand" list="brandList" placeholder="예) 롬앤" autocomplete="off">
+        <datalist id="brandList"></datalist>
+      </div>
+      <div class="field">
+        <label>제품명 <span class="hint">필수 · 브랜드는 빼고 적어주세요</span></label>
+        <input id="f_name" placeholder="예) 쥬시 래스팅 틴트 #06 피그">
       </div>
       <div class="field">
         <label>카테고리 <span class="hint">여러 개 선택 가능 · 다시 누르면 해제</span></label>
@@ -676,11 +724,25 @@
         <label>관리자 PIN <span class="hint">실수 방지용 잠금이며 보안 기능이 아닙니다</span></label>
         <input id="s_pin" inputmode="numeric">
       </div>
+      <div class="field bmkbox">
+        <label>상품정보 자동 입력 <span class="hint">이미지·제목·가격을 한 번에</span></label>
+        <a class="bmk" id="bmkLink" href="#" onclick="return false">＋ 상품정보 담기</a>
+        <div class="bmksteps">
+          <b>이 버튼을 브라우저 북마크바로 드래그해 두세요.</b> (한 번만 하면 됩니다)
+          <ol>
+            <li>쿠팡·올리브영 등에서 <b>상품 페이지를 엽니다</b></li>
+            <li>북마크바의 <b>＋ 상품정보 담기</b>를 누릅니다 → “복사했습니다” 알림</li>
+            <li>이 사이트 <b>제품 추가</b> 창을 열고 <code class="k">Ctrl</code>+<code class="k">V</code>
+              (맥은 <code class="k">⌘</code>+<code class="k">V</code>)</li>
+          </ol>
+          제품명·설명·가격·이미지·상품주소가 한 번에 채워집니다. 이미 값이 있는 칸은 덮어쓰지 않습니다.
+        </div>
+      </div>
       <div class="field">
-        <label>자동 채우기 서버 <span class="hint">비워두면 자동 채우기 기능이 꺼집니다</span></label>
-        <input id="s_apiBase" placeholder="https://내주소.vercel.app">
+        <label>자동 채우기 서버 <span class="hint">선택 사항 · 비워두면 위 북마클릿만 씁니다</span></label>
+        <input id="s_apiBase" placeholder="https://내주소.vercel.app (없어도 됩니다)">
         <input id="s_apiKey" placeholder="접근키 (서버에 HUB_KEY를 설정한 경우에만)" style="margin-top:6px">
-        <span class="hint">쿠팡·올리브영·네이버쇼핑은 서버 접근을 차단하므로, 그쪽은 아래 북마클릿을 쓰세요.</span>
+        <span class="hint">서버를 두면 URL만 넣어도 채워지지만, 쿠팡·올리브영·네이버쇼핑은 서버 접근을 차단하므로 그쪽은 어차피 북마클릿을 써야 합니다.</span>
       </div>
       <div class="field">
         <label>구매처 아이콘 <span class="hint">기본은 이니셜 배지 · 직접 만든 이미지로 교체 가능</span></label>
@@ -690,14 +752,6 @@
           웹에서 임의로 내려받은 로고는 넣지 마세요.
         </span>
         <input type="file" id="s_markFile" accept="image/*" style="display:none">
-      </div>
-      <div class="field">
-        <label>북마클릿 <span class="hint">차단 사이트도 되는 방법</span></label>
-        <a class="bmk" id="bmkLink" href="#" onclick="return false">＋ 상품정보 담기</a>
-        <span class="hint">
-          이 버튼을 브라우저 <b>북마크바로 드래그</b>해 두세요. 상품 페이지에서 북마크를 누르면 이미지·제목·가격이 복사되고,
-          제품 등록 창에서 <code class="k">Ctrl</code>+<code class="k">V</code> 하면 그대로 채워집니다.
-        </span>
       </div>
       <div class="field">
         <label>이전 데이터 <span class="hint">버전 갱신 직전에 자동 백업된 내용</span></label>
@@ -827,7 +881,7 @@ function presetByUrl(u){
 
 // 시드(기본 카테고리·제품)를 바꿀 때마다 올린다.
 // 저장된 데이터의 seedVersion이 이보다 낮으면 새 시드로 교체하고, 이전 데이터는 백업해 둔다.
-var SEED_VERSION = 8;
+var SEED_VERSION = 11;
 
 /* 배포용 파일에 현재 내용을 통째로 심어두는 자리.
    '배포용 파일 내보내기'를 누르면 이 줄이 실제 데이터로 바뀐 새 HTML이 만들어진다. */
@@ -1095,16 +1149,30 @@ function seedData(){
     "하이라이터":"하이라이터&쉐딩",
     "쉐딩":"하이라이터&쉐딩"
   };
+  // 브랜드는 제품명 첫 단어. 두 단어짜리 브랜드만 예외로 둔다.
+  var MULTI_BRANDS = ["B.READY 비레디"];
+  function splitBrand(full){
+    for(var i=0;i<MULTI_BRANDS.length;i++){
+      if(full.indexOf(MULTI_BRANDS[i]+" ")===0)
+        return [MULTI_BRANDS[i], full.slice(MULTI_BRANDS[i].length+1)];
+    }
+    var sp = full.indexOf(" ");
+    if(sp<=0) return ["", full];
+    var b = full.slice(0,sp);
+    if(b==="롬엔") b="롬앤";           // 원본 자료 오타 보정
+    return [b, full.slice(sp+1)];
+  }
   var products = PRODUCT_SEED.map(function(row, i){
-    var name=row[0], tone=row[1], kind=row[2], isMale=row[3]===1;
+    var full=row[0], tone=row[1], kind=row[2], isMale=row[3]===1;
+    var parts = splitBrand(full), brand = parts[0], name = parts[1];
     var ids=[];
     var typeId = byName[KIND_TO_CAT[kind] || ""];
     if(typeId) ids.push(typeId);
     if(byName[tone]) ids.push(byName[tone]);
-    var brand = name.split(" ")[0];
     return {
       id: uid(),
       catIds: ids,
+      brand: brand,
       name: name,
       desc: tone + (isMale ? " 남성 추천 · " : " 추천 · ") + kind,
       price: null,
@@ -1115,7 +1183,7 @@ function seedData(){
       createdAt: Date.now() + i,
       links: [{
         id: uid(), preset:"naver", label:"검색으로 찾기", price:null,
-        url:"https://search.shopping.naver.com/search/all?query=" + encodeURIComponent(name),
+        url:"https://search.shopping.naver.com/search/all?query=" + encodeURIComponent(full),
         clicks:0
       }]
     };
@@ -1125,8 +1193,8 @@ function seedData(){
     version:3,
     seedVersion:SEED_VERSION,
     settings:{
-      title:"기초 화장품 및 퍼스널컬러 타입별 색조 제품 추천",
-      sub:"강의에서 소개한 제품을 한곳에 모았습니다",
+      title:"제품추천 및 구매링크",
+      sub:"",
       discShort:DEFAULT_DISC_SHORT,
       disclosure:DEFAULT_DISCLOSURE,
       foot:"",
@@ -1241,6 +1309,7 @@ function normalize(d){
       out.products.push({
         id: p.id || uid(),
         catIds: ids,
+        brand: typeof p.brand==="string" ? p.brand.trim() : "",
         name: p.name.trim(),
         desc: typeof p.desc==="string" ? p.desc : "",
         price: (typeof p.price==="number" && isFinite(p.price) && p.price>=0) ? p.price : null,
@@ -1458,11 +1527,24 @@ function applySub(list){
     return okAll;
   });
 }
+// 브랜드 + 제품명을 이어붙인 전체 이름 (검색 링크·정렬·이미지 alt에 쓴다)
+// 이미 등록된 브랜드를 입력칸 자동완성 목록으로 제공한다
+function refreshBrandList(){
+  var seen={}, out=[];
+  state.products.forEach(function(p){
+    var b=(p.brand||"").trim();
+    if(b && !seen[b]){ seen[b]=1; out.push(b); }
+  });
+  out.sort(function(a,b){ return a.localeCompare(b,"ko"); });
+  var el=$("brandList");
+  if(el) el.innerHTML = out.map(function(b){ return '<option value="'+esc(b)+'"></option>'; }).join("");
+}
+function fullName(p){ return (p.brand? p.brand+" ":"")+p.name; }
 function applyQuery(list){
   var q=query.trim().toLowerCase();
   if(!q) return list;
   return list.filter(function(p){
-    var hay=(p.name+" "+p.desc+" "+p.tags.join(" ")+" "+catNamesOf(p)).toLowerCase();
+    var hay=((p.brand||"")+" "+p.name+" "+p.desc+" "+p.tags.join(" ")+" "+catNamesOf(p)).toLowerCase();
     return hay.indexOf(q)!==-1;
   });
 }
@@ -1471,7 +1553,7 @@ function applySort(list){
   function clicksOf(p){ var n=0; p.links.forEach(function(l){ n+=l.clicks||0; }); return n; }
   var out=list.slice();
   if(sortBy==="new") out.sort(function(a,b){ return b.createdAt-a.createdAt; });
-  else if(sortBy==="name") out.sort(function(a,b){ return a.name.localeCompare(b.name,"ko"); });
+  else if(sortBy==="name") out.sort(function(a,b){ return fullName(a).localeCompare(fullName(b),"ko"); });
   else if(sortBy==="priceAsc") out.sort(function(a,b){ return (a.price==null?Infinity:a.price)-(b.price==null?Infinity:b.price); });
   else if(sortBy==="priceDesc") out.sort(function(a,b){ return (b.price==null?-1:b.price)-(a.price==null?-1:a.price); });
   else if(sortBy==="clicks") out.sort(function(a,b){ return clicksOf(b)-clicksOf(a); });
@@ -1526,13 +1608,14 @@ function cardHtml(p, manualOrder){
 
   var thumb = img
     ? '<div class="thumb"><span class="ph">'+PH_ICON+'<span>이미지를 불러오지 못했습니다</span></span>'+
-      '<img src="'+esc(img)+'" alt="'+esc(p.name)+'" loading="lazy" onerror="this.remove()"></div>'
+      '<img src="'+esc(img)+'" alt="'+esc(fullName(p))+'" loading="lazy" onerror="this.remove()"></div>'
     : '';
 
   return '<article class="card">'+
     thumb+
     '<div class="card-body">'+
       badges+
+      (p.brand?'<div class="pbrand">'+esc(p.brand)+'</div>':'')+
       '<h3 class="pname">'+esc(p.name)+'</h3>'+
       (p.desc?'<p class="pdesc">'+esc(p.desc)+'</p>':'')+
       (p.price!=null && pricedCount===0 ?'<div class="pprice">'+esc(won(p.price))+'<small>참고가</small></div>':'')+
@@ -1657,15 +1740,15 @@ function seasonOf(c){
 
 function renderHome(){
   var counts=countsByCat();
-  var h='<div style="height:22px"></div>';
+  var h='';
 
   // 제품군 — 한 줄에 3개. 퍼스널컬러·맨즈는 각 분류 안의 필터로 좁힌다.
   var types=catsInGroup("type");
   if(types.length){
+    h += '<div class="homehint">각 제품군에 들어가시면 <b>퍼스널컬러별 추천 제품</b>을 보실 수 있습니다</div>';
     h += '<div class="tiles t3">'+
       types.map(function(c){ return tileHtml(hrefFor("cat",c.id), c.name, counts[c.id]||0, c, true); }).join("")+
     '</div>';
-    h += '<div class="homehint">각 분류에 들어가면 퍼스널컬러 타입과 남성 추천으로 좁혀볼 수 있습니다</div>';
   }
 
   var etc=catsInGroup("etc");
@@ -1964,6 +2047,8 @@ function openProduct(id){
 
   $("f_src").value = p ? (p.srcUrl||"") : "";
   setQState("");
+  $("f_brand").value = p ? (p.brand||"") : "";
+  refreshBrandList();
   $("f_name").value = p ? p.name : "";
   $("f_price").value = (p && p.price!=null) ? p.price : "";
   $("f_desc").value = p ? p.desc : "";
@@ -2043,6 +2128,8 @@ $("linkList").addEventListener("click", function(e){
 
 
 /* ===================== 자동 채우기 / 스마트 붙여넣기 ===================== */
+// 서버가 없을 때는 북마클릿 사용법을 펼쳐서 바로 보이게 한다
+function openBmkHelp(){ var d=$("bmkHelp"); if(d && !d.open) d.open = true; }
 
 function setQState(msg, kind){
   var el=$("qState");
@@ -2084,7 +2171,23 @@ function looksLikeImageUrl(u){
 // 북마클릿이 담아준 JSON을 폼에 반영
 function applyMeta(m, source){
   var filled=[];
-  if(m.title && !$("f_name").value.trim()){ $("f_name").value=String(m.title).slice(0,120); filled.push("제품명"); }
+  if(m.title && !$("f_name").value.trim()){
+    var t = String(m.title).replace(/^\s*\[[^\]]*\]\s*/,"").trim();   // 앞머리 [쇼핑몰] 표기 제거
+    // 이미 등록된 브랜드로 시작하면 브랜드칸을 따로 채운다
+    if(!$("f_brand").value.trim()){
+      var known=[]; state.products.forEach(function(p){ if(p.brand) known.push(p.brand); });
+      known.sort(function(a,b){ return b.length-a.length; });   // 긴 이름 먼저 (B.READY 비레디)
+      for(var bi=0; bi<known.length; bi++){
+        if(t.toLowerCase().indexOf(known[bi].toLowerCase()+" ")===0){
+          $("f_brand").value = known[bi];
+          t = t.slice(known[bi].length+1).trim();
+          filled.push("브랜드");
+          break;
+        }
+      }
+    }
+    $("f_name").value=t.slice(0,120); filled.push("제품명");
+  }
   if(m.desc && !$("f_desc").value.trim()){ $("f_desc").value=String(m.desc).slice(0,300); filled.push("설명"); }
   var price=String(m.price==null?"":m.price).replace(/[^0-9]/g,"");
   if(price){
@@ -2125,7 +2228,8 @@ function fetchMeta(url){
   if(!u){ setQState("주소 형식을 확인해 주세요. (https:// 로 시작)", "err"); return; }
   $("f_src").value=u;
   if(!base){
-    setQState("자동 채우기 서버가 설정되지 않았습니다. 설정에서 서버 주소를 넣거나, 북마클릿을 쓰세요.", "err");
+    setQState("상품 페이지에서 북마크바의 ‘＋ 상품정보 담기’를 누른 뒤 여기에 붙여넣으세요. 아래 사용법을 참고하세요.", "err");
+    openBmkHelp();
     return;
   }
   setQState("불러오는 중…", "wait");
@@ -2164,7 +2268,8 @@ function fetchImageFrom(url, btn){
   if(!u){ setQState("먼저 링크 주소를 입력해 주세요.","err"); return; }
   var base=(state.settings.apiBase||"").replace(/\/+$/,"");
   if(!base){
-    setQState("자동 채우기 서버가 없어 이미지를 가져올 수 없습니다. 설정에서 서버를 등록하거나, 상품 페이지에서 이미지를 복사해 붙여넣으세요.","err");
+    setQState("이미지를 가져오려면 아래 북마클릿을 쓰거나, 상품 페이지에서 이미지를 복사해 이 창에 붙여넣으세요.","err");
+    openBmkHelp();
     return;
   }
   setQState("이미지를 가져오는 중…","wait");
@@ -2316,7 +2421,9 @@ var BOOKMARKLET = "javascript:(function(){"+
   "try{document.execCommand('copy');done()}catch(e){prompt('아래 내용을 복사하세요',o)}document.body.removeChild(a)};"+
   "if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(o).then(done,fb)}else{fb()}"+
 "})()";
-$("bmkLink").setAttribute("href", BOOKMARKLET);
+["bmkLink","bmkLink2"].forEach(function(id){
+  var el=$(id); if(el) el.setAttribute("href", BOOKMARKLET);
+});
 
 $("btnSaveProduct").addEventListener("click", function(){
   var name=$("f_name").value.trim();
@@ -2354,7 +2461,7 @@ $("btnSaveProduct").addEventListener("click", function(){
 
   var tags=$("f_tags").value.split(",").map(function(t){return t.trim();}).filter(Boolean);
   var data={
-    catIds:chosen, name:name, desc:$("f_desc").value.trim(),
+    catIds:chosen, brand:$("f_brand").value.trim(), name:name, desc:$("f_desc").value.trim(),
     price:price, image:pendingImage, tags:tags, links:links,
     male:$("f_male").checked,
     srcUrl:safeUrl($("f_src").value.trim())
