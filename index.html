@@ -276,6 +276,20 @@
   }
   .homehint b{font-weight:800}
   @media(max-width:560px){ .homehint{font-size:13.5px;padding:11px 12px} }
+  .homesec{
+    display:flex;align-items:center;gap:9px;margin:24px 2px 12px;
+    font-size:15px;font-weight:800;color:var(--text);letter-spacing:-.02em
+  }
+  .homesec::before{content:"";width:4px;height:16px;border-radius:2px;background:var(--brand)}
+  .homesec::after{content:"";flex:1;height:1px;background:var(--line)}
+  .homesec:first-child{margin-top:8px}
+  .tonebox{
+    background:#fff;border:1px solid var(--line);border-radius:14px;
+    padding:14px 14px 4px;box-shadow:var(--shadow)
+  }
+  .tonerow{margin-bottom:12px}
+  .tonelabel{font-size:12px;font-weight:800;color:var(--mute);margin:0 0 8px}
+  @media(max-width:560px){ .homesec{font-size:14px;margin:20px 2px 10px} .tonebox{padding:12px 12px 2px} }
   .dnote{
     margin:12px 4px 2px;font-size:11.5px;line-height:1.5;color:var(--mute);
     background:#f6f7f9;border-radius:9px;padding:9px 10px
@@ -955,21 +969,10 @@ function cloudFetchState(){
   });
 }
 
+// 전체 교체는 '최초 저장 / 백업 복원 / 초기화' 같은 의도적인 경우에만 쓴다.
+// 평소 편집은 절대 이 경로를 타면 안 된다 (다른 기기 작업이 지워진다).
 function cloudSaveState(){
-  return ensureToken().then(function(){
-    return fetch(CLOUD.url + "/rest/v1/hub_state?on_conflict=id", {
-      method:"POST",
-      headers: (function(){
-        var h = cloudHeaders(true);
-        h["Prefer"] = "resolution=merge-duplicates,return=minimal";
-        return h;
-      })(),
-      body: JSON.stringify([{ id:1, data: state }])
-    });
-  }).then(function(r){
-    if(!r.ok){
-      return r.text().then(function(t){ throw new Error("저장 실패 (" + r.status + ") " + t.slice(0,120)); });
-    }
+  return cloudRpc("hub_replace_all", { d: state }).then(function(){
     cloudRowExists = true;
     return true;
   });
@@ -995,7 +998,14 @@ var opsTimer = null;
 // op: {fn:"hub_save_product", args:{...}, key:"p:<id>"}
 function queueOp(op){
   if(!cloudEnabled() || !isLoggedIn()) return;
-  if(!cloudRowExists){ queueCloudSave(); return; }  // DB가 비어 있으면 최초 1회는 전체 저장
+  // DB 상태를 아직 못 읽었으면(오프라인 등) 전체 저장으로 흐르지 않게 막는다.
+  // 여기서 전체를 올리면 다른 기기의 작업을 지울 수 있다.
+  if(!cloudReady){
+    setSync("error", "연결 확인 중 — 새로고침 후 다시 저장해 주세요");
+    toast("서버 상태를 확인하지 못했습니다. 새로고침 후 다시 저장해 주세요.");
+    return;
+  }
+  if(!cloudRowExists){ queueCloudSave(); return; }  // DB가 완전히 비었을 때만 최초 1회 전체 저장
   // 같은 대상에 대한 이전 변경은 최신 것으로 대체한다
   pendingOps = pendingOps.filter(function(o){ return o.key !== op.key; });
   pendingOps.push(op);
@@ -1015,10 +1025,16 @@ function flushOps(){
   chain.then(function(){
     setSync("saved", timeAgoLabel());
   }).catch(function(e){
-    // 실패한 변경은 다시 큐에 넣어 다음 기회에 재시도한다
+    // 실패한 변경은 버리지 않고 다시 큐에 넣는다
     pendingOps = batch.concat(pendingOps);
-    setSync("error", String(e.message||e).slice(0,60));
-    toast("저장에 실패했습니다. 인터넷 연결을 확인해 주세요. 화면을 닫지 마세요.");
+    var msg = String(e.message||e);
+    setSync("error", msg.slice(0,60));
+    if(/401|403|PGRST|permission|policy/i.test(msg)){
+      // 오래된 탭이거나 로그인이 풀린 경우 — 조용히 넘어가면 안 된다
+      alert("저장 권한이 없습니다.\n\n이 탭이 오래된 버전일 수 있습니다.\n페이지를 새로고침한 뒤 다시 로그인해 주세요.\n\n(새로고침 전까지 이 창의 변경 내용은 저장되지 않습니다)");
+    } else {
+      toast("저장에 실패했습니다. 인터넷 연결을 확인해 주세요. 창을 닫지 마세요.");
+    }
   });
 }
 
@@ -2023,13 +2039,29 @@ function renderHome(){
   var counts=countsByCat();
   var h='';
 
-  // 제품군 — 한 줄에 3개. 퍼스널컬러·맨즈는 각 분류 안의 필터로 좁힌다.
+  // 1) 제품 분류별 보기
   var types=catsInGroup("type");
   if(types.length){
-    h += '<div class="homehint">각 제품군에 들어가시면 <b>퍼스널컬러별 추천 제품</b>을 보실 수 있습니다</div>';
+    h += '<div class="homesec">제품 분류별 보기</div>';
     h += '<div class="tiles t3">'+
       types.map(function(c){ return tileHtml(hrefFor("cat",c.id), c.name, counts[c.id]||0, c, true); }).join("")+
     '</div>';
+  }
+
+  // 2) 퍼스널컬러별 모아보기 — 제품군과 상관없이 톤으로 모아 본다
+  var warm=catsInGroup("warm"), cool=catsInGroup("cool");
+  if(warm.length || cool.length){
+    h += '<div class="homesec">퍼스널 컬러별 제품 모아보기</div>';
+    h += '<div class="tonebox">';
+    [["웜톤",warm],["쿨톤",cool]].forEach(function(pair){
+      if(!pair[1].length) return;
+      h += '<div class="tonerow"><div class="tonelabel">'+esc(pair[0])+'</div><div class="tiles t3">'+
+        pair[1].map(function(c){
+          return tileHtml(hrefFor("cat",c.id), c.name, counts[c.id]||0, c);
+        }).join("")+
+      '</div></div>';
+    });
+    h += '</div>';
   }
 
   var etc=catsInGroup("etc");
@@ -2099,6 +2131,10 @@ function renderList(){
     if(!subs.length) return;
     var counts2={};
     baseList().forEach(function(p){ p.catIds.forEach(function(id){ counts2[id]=(counts2[id]||0)+1; }); });
+    // 이 분류에 해당 축의 제품이 하나도 없으면 필터 줄 자체를 감춘다.
+    // (기초화장품·도구류는 퍼스널컬러로 나뉘지 않으므로 톤 필터가 뜰 이유가 없다)
+    var hasAny = subs.some(function(c){ return (counts2[c.id]||0) > 0; });
+    if(!hasAny && subCats.length === 0) return;
     h += '<div class="subbar"><span class="sl">'+esc(groupLabel(gk))+'</span><div class="chips">'+
       subs.map(function(c){
         var n=counts2[c.id]||0;
@@ -3265,6 +3301,13 @@ function startPolling(){
 }
 document.addEventListener("visibilitychange", function(){
   if(!document.hidden) pollCloud();   // 탭으로 돌아오면 바로 확인
+});
+
+window.addEventListener("beforeunload", function(e){
+  if(pendingOps.length){
+    e.preventDefault(); e.returnValue = "";   // 저장 안 된 변경이 남아 있습니다
+    return "";
+  }
 });
 
 /* ============ 시작 ============ */
