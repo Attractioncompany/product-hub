@@ -1469,6 +1469,13 @@ function normalize(d){
       if(!p) return;
       var _nm = (typeof p.name==="string") ? p.name.trim() : "";
       var _cl = (typeof p.color==="string") ? p.color.trim() : "";
+      // 색상 칸이 비어 있는데 제품명에 '#'이 있으면 그 뒤를 색상으로 옮긴다.
+      // (색상 칸이 없던 시절 데이터가 들어와도 스스로 정리된다)
+      if(!_cl && _nm.indexOf("#") !== -1){
+        var _at = _nm.indexOf("#");
+        _cl = _nm.slice(_at).trim();
+        _nm = _nm.slice(0, _at).trim();
+      }
       if(!_nm && !_cl) return;
       var links=[];
       if(Array.isArray(p.links)){
