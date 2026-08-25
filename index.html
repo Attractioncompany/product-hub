@@ -943,7 +943,7 @@ function ensureToken(){
 }
 
 function cloudFetchState(){
-  return fetch(CLOUD.url + "/rest/v1/hub_state?id=eq.1&select=data,updated_at", {
+  return fetch(CLOUD.url + "/rest/v1/hub_state?id=eq.1&select=data,updated_at,rev", {
     headers: cloudHeaders(false), cache: "no-store"
   }).then(function(r){
     if(!r.ok) throw new Error("불러오기 실패 (" + r.status + ")");
@@ -973,6 +973,66 @@ function cloudSaveState(){
     cloudRowExists = true;
     return true;
   });
+}
+
+// ---- 부분 저장 (동시 편집 안전) ----------------------------------------
+// 전체 상태를 덮어쓰면 다른 PC가 방금 넣은 내용이 지워진다.
+// 그래서 바뀐 조각만 보내고 DB가 한 문장 안에서 병합하게 한다.
+function cloudRpc(fn, args){
+  return ensureToken().then(function(){
+    return fetch(CLOUD.url + "/rest/v1/rpc/" + fn, {
+      method:"POST", headers: cloudHeaders(true), body: JSON.stringify(args||{})
+    });
+  }).then(function(r){
+    if(!r.ok) return r.text().then(function(t){ throw new Error("저장 실패 ("+r.status+") "+t.slice(0,140)); });
+    return r.json();
+  });
+}
+
+var pendingOps = [];   // 아직 못 올린 변경들
+var opsTimer = null;
+
+// op: {fn:"hub_save_product", args:{...}, key:"p:<id>"}
+function queueOp(op){
+  if(!cloudEnabled() || !isLoggedIn()) return;
+  if(!cloudRowExists){ queueCloudSave(); return; }  // DB가 비어 있으면 최초 1회는 전체 저장
+  // 같은 대상에 대한 이전 변경은 최신 것으로 대체한다
+  pendingOps = pendingOps.filter(function(o){ return o.key !== op.key; });
+  pendingOps.push(op);
+  setSync("saving");
+  if(opsTimer) clearTimeout(opsTimer);
+  opsTimer = setTimeout(flushOps, 500);
+}
+
+function flushOps(){
+  if(!pendingOps.length){ return; }
+  var batch = pendingOps.slice();
+  pendingOps = [];
+  var chain = Promise.resolve();
+  batch.forEach(function(op){
+    chain = chain.then(function(){ return cloudRpc(op.fn, op.args); });
+  });
+  chain.then(function(){
+    setSync("saved", timeAgoLabel());
+  }).catch(function(e){
+    // 실패한 변경은 다시 큐에 넣어 다음 기회에 재시도한다
+    pendingOps = batch.concat(pendingOps);
+    setSync("error", String(e.message||e).slice(0,60));
+    toast("저장에 실패했습니다. 인터넷 연결을 확인해 주세요. 화면을 닫지 마세요.");
+  });
+}
+
+function saveProductCloud(prod){ queueOp({fn:"hub_save_product", args:{p:prod}, key:"p:"+prod.id}); }
+function deleteProductCloud(id){ queueOp({fn:"hub_delete_product", args:{pid:id}, key:"p:"+id}); }
+function deleteCategoryCloud(cid){
+  queueOp({fn:"hub_delete_category", args:{cid:cid}, key:"catdel:"+cid});
+}
+function savePartCloud(part){
+  queueOp({fn:"hub_save_part", args:{part:part, val:state[part]}, key:"part:"+part});
+}
+function reorderProductsCloud(){
+  queueOp({fn:"hub_reorder_products",
+           args:{ids: state.products.map(function(p){ return p.id; })}, key:"order"});
 }
 
 function setSync(st, msg){
@@ -1524,12 +1584,12 @@ function load(){
     var parsed = JSON.parse(raw);
     state = normalize(parsed);
     if((state.seedVersion||0) < SEED_VERSION){
-      // 예전 버전에서 만들어진 데이터가 남아 있으면 새 기본 데이터로 갈아끼운다.
-      // 되돌릴 수 있도록 직전 데이터는 따로 백업해 둔다.
+      // 브라우저에 남아 있던 예전 캐시를 새 기본값으로 갈아끼운다.
+      // 진짜 내용은 곧이어 bootCloud()가 DB에서 받아 덮어쓰므로
+      // 이건 사용자에게 알릴 일이 아니다(예전 안내문이 오해를 샀다).
       try{ if(canPersist) localStorage.setItem(BACKUP_KEY, raw); }catch(e2){}
       state = seedData();
       saveLocalOnly();   // 이 경로가 클라우드 데이터를 덮어쓰면 안 된다
-      pendingNotice = "새 버전의 기본 데이터로 갱신했습니다. 이전 내용은 백업해 두었습니다.";
       return;
     }
     if(parsed.version !== 3) saveLocalOnly(); // 구버전 형식은 캐시만 새 형식으로
@@ -1551,6 +1611,7 @@ function bootCloud(){
   cloudFetchState().then(function(row){
     if(row && row.data){
       state = normalize(row.data);
+      lastRev = (typeof row.rev === "number") ? row.rev : null;
       saveLocalOnly();
       renderAll();
     } else {
@@ -2175,7 +2236,11 @@ function countClick(pid, lid){
     if(state.products[i].id!==pid) continue;
     var ls=state.products[i].links;
     for(var j=0;j<ls.length;j++){
-      if(ls[j].id===lid){ ls[j].clicks=(ls[j].clicks||0)+1; save(); return; }
+      if(ls[j].id===lid){
+        ls[j].clicks=(ls[j].clicks||0)+1;
+        saveLocalOnly(); saveProductCloud(state.products[i]);
+        return;
+      }
     }
   }
 }
@@ -2678,8 +2743,24 @@ var BOOKMARKLET = "javascript:(function(){"+
   "try{if(img)img=new URL(img,location.href).href}catch(e){}"+
   "var t=g('og:title')||document.title||'';"+
   "var d=g('og:description')||'';"+
-  "var p=g('product:price:amount')||g('og:price:amount')||'';"+
-  "if(!p){var m=(document.body.innerText||'').match(/([0-9]{1,3}(?:,[0-9]{3})+)\\s*원/);if(m)p=m[1]}"+
+  // 가격은 '정가'가 아니라 '실제 결제가(할인가)'를 우선한다.
+  "var p='';"+
+  "try{var ns=document.querySelectorAll('script[type=\"application/ld+json\"]');"+
+  "for(var i=0;i<ns.length&&!p;i++){var j=JSON.parse(ns[i].textContent);"+
+  "var arr=Array.isArray(j)?j.slice():[j];"+
+  "for(var k=0;k<arr.length&&!p;k++){var o=arr[k];if(!o||typeof o!=='object')continue;"+
+  "if(o['@graph'])arr=arr.concat(o['@graph']);"+
+  "var of=o.offers;if(of){of=Array.isArray(of)?of[0]:of;if(of)p=of.price||of.lowPrice||''}}}}catch(e){}"+
+  "if(!p){var sel=['.total-price strong','.prod-sale-price .total-price strong',"+
+  "'span.total-price>strong','.price-value','.prod-price .total-price','#salePrice',"+
+  "'.total_price strong','.prod-coupon-price .total-price strong'];"+
+  "for(var q=0;q<sel.length&&!p;q++){var el=document.querySelector(sel[q]);"+
+  "if(el&&/[0-9]/.test(el.textContent))p=el.textContent}}"+
+  "if(!p)p=g('product:price:amount')||g('og:price:amount')||'';"+
+  "if(!p){var tx=(document.body.innerText||document.body.textContent||'');"+
+  "var re=/([0-9]{1,3}(?:,[0-9]{3})+)\\s*원/g,mm;"+
+  "while((mm=re.exec(tx))){var before=tx.slice(Math.max(0,mm.index-14),mm.index);"+
+  "if(/배송|적립|쿠폰|포인트|마일리지|캐시/.test(before))continue;p=mm[1];break}}"+
   "var o=JSON.stringify({__hub:1,title:t,desc:d,image:img,price:String(p).replace(/[^0-9]/g,''),url:location.href,site:location.hostname});"+
   "var done=function(){alert('상품 정보를 복사했습니다.\\n제품 등록 창에서 Ctrl+V(맥은 Cmd+V) 하세요.')};"+
   "var fb=function(){var a=document.createElement('textarea');a.value=o;a.style.position='fixed';a.style.opacity='0';document.body.appendChild(a);a.select();"+
@@ -2736,21 +2817,30 @@ $("btnSaveProduct").addEventListener("click", function(){
     srcUrl:safeUrl($("f_src").value.trim())
   };
 
+  var saved = null;
   if(editingId){
     for(var i=0;i<state.products.length;i++){
       if(state.products[i].id===editingId){
         var p=state.products[i];
-        p.catIds=data.catIds; p.name=data.name; p.desc=data.desc; p.price=data.price;
-        p.image=data.image; p.tags=data.tags; p.links=data.links; p.srcUrl=data.srcUrl;
-        p.male=data.male;
+        // 필드를 하나씩 옮기면 새로 생긴 항목(브랜드·색상)을 빠뜨리기 쉽다.
+        // id/createdAt/clicks 만 지키고 나머지는 통째로 덮어쓴다.
+        data.id = p.id;
+        data.createdAt = p.createdAt;
+        state.products[i] = data;
+        saved = data;
         break;
       }
     }
   } else {
     data.id=uid(); data.createdAt=Date.now();
     state.products.push(data);
+    saved = data;
   }
-  if(save()){ closeModal("mProduct"); renderAll(); toast(editingId?"수정했습니다.":"제품을 추가했습니다."); }
+  if(saveLocalOnly() && saved){
+    saveProductCloud(saved);          // 이 제품만 올린다 (다른 PC 작업을 지우지 않는다)
+    closeModal("mProduct"); renderAll();
+    toast(editingId?"수정했습니다.":"제품을 추가했습니다.");
+  }
 });
 
 function delProduct(id){
@@ -2759,7 +2849,8 @@ function delProduct(id){
   if(!p) return;
   if(!confirm('"'+p.name+'" 제품을 삭제할까요? 되돌릴 수 없습니다.')) return;
   state.products = state.products.filter(function(x){ return x.id!==id; });
-  save(); renderAll(); toast("삭제했습니다.");
+  saveLocalOnly(); deleteProductCloud(id);
+  renderAll(); toast("삭제했습니다.");
 }
 function dupProduct(id){
   for(var i=0;i<state.products.length;i++){
@@ -2769,7 +2860,8 @@ function dupProduct(id){
     copy.id=uid(); copy.createdAt=Date.now(); copy.name=src.name+" (복사)";
     copy.links=copy.links.map(function(l){ l.id=uid(); l.clicks=0; return l; });
     state.products.splice(i+1,0,copy);
-    save(); renderAll(); toast("복제했습니다."); return;
+    saveLocalOnly(); saveProductCloud(copy); reorderProductsCloud();
+    renderAll(); toast("복제했습니다."); return;
   }
 }
 function moveProduct(id,dir){
@@ -2778,7 +2870,7 @@ function moveProduct(id,dir){
   var j=i+dir;
   if(i<0 || j<0 || j>=state.products.length) return;
   var tmp=state.products[i]; state.products[i]=state.products[j]; state.products[j]=tmp;
-  save(); renderPage();
+  saveLocalOnly(); reorderProductsCloud(); renderPage();
 }
 
 /* ============ 카테고리 ============ */
@@ -2822,7 +2914,7 @@ function addCat(){
   if(dup){ toast("같은 그룹에 동일한 이름이 이미 있습니다."); return; }
   state.categories.push({id:uid(),name:v,group:g,colors:(TONE_CHIPS[v]||[]).slice(),icon:(CAT_ICONS[v]||"")});
   $("newCat").value="";
-  save(); renderCatList(); renderMenu(); renderPage(); toast("카테고리를 추가했습니다.");
+  saveLocalOnly(); savePartCloud("categories"); renderCatList(); renderMenu(); renderPage(); toast("카테고리를 추가했습니다.");
 }
 $("catList").addEventListener("click", function(e){
   var t;
@@ -2837,7 +2929,7 @@ $("catList").addEventListener("click", function(e){
     });
     subCats = subCats.filter(function(x){ return x!==id; });
     if(route.view==="cat" && route.id===id){ go("home"); }
-    save(); renderCatList(); renderAll();
+    saveLocalOnly(); deleteCategoryCloud(id); renderCatList(); renderAll();
     return;
   }
   if((t=e.target.closest("[data-cmove]"))){
@@ -2847,7 +2939,7 @@ $("catList").addEventListener("click", function(e){
     var j=i+parseInt(pm[1],10);
     if(i<0||j<0||j>=state.categories.length) return;
     var tmp=state.categories[i]; state.categories[i]=state.categories[j]; state.categories[j]=tmp;
-    save(); renderCatList(); renderMenu(); renderPage();
+    saveLocalOnly(); savePartCloud("categories"); renderCatList(); renderMenu(); renderPage();
   }
 });
 $("catList").addEventListener("change", function(e){
@@ -2855,14 +2947,14 @@ $("catList").addEventListener("change", function(e){
   if(sel){
     var gid=sel.getAttribute("data-cgroup"), gv=sel.value;
     state.categories.forEach(function(c){ if(c.id===gid) c.group=gv; });
-    save(); renderCatList(); renderMenu(); renderPage();
+    saveLocalOnly(); savePartCloud("categories"); renderCatList(); renderMenu(); renderPage();
     return;
   }
   var inp=e.target.closest("[data-cid]"); if(!inp) return;
   var id=inp.getAttribute("data-cid"), v=inp.value.trim();
   if(!v){ toast("이름은 비울 수 없습니다."); renderCatList(); return; }
   state.categories.forEach(function(c){ if(c.id===id) c.name=v; });
-  save(); renderAll();
+  saveLocalOnly(); savePartCloud("categories"); renderAll();
 });
 
 /* ============ 설정 ============ */
@@ -2991,7 +3083,7 @@ $("btnSaveSettings").addEventListener("click", function(){
   state.settings.disclosure=$("s_disc").value.trim();
   state.settings.foot=$("s_foot").value.trim();
   state.settings.pin=pin;
-  if(save()){ closeModal("mSettings"); renderAll(); toast("설정을 저장했습니다."); }
+  if(saveLocalOnly()){ savePartCloud("settings"); closeModal("mSettings"); renderAll(); toast("설정을 저장했습니다."); }
 });
 function prevBackup(){
   if(!canPersist) return null;
@@ -3137,6 +3229,44 @@ $("importFile").addEventListener("change", function(){
   fr.readAsText(f);
 });
 
+/* ---- 다른 PC의 변경 따라가기 ----------------------------------------
+   rev 만 가볍게 조회해서 바뀌었을 때만 전체를 다시 받는다.
+   편집 중(모달 열림)이거나 아직 못 올린 변경이 있으면 건드리지 않는다. */
+var lastRev = null;
+var pollTimer = null;
+
+function anyModalOpen(){ return !!document.querySelector(".overlay.on"); }
+
+function pollCloud(){
+  if(!cloudEnabled() || !cloudRowExists) return;
+  if(pendingOps.length || anyModalOpen()) return;
+  fetch(CLOUD.url + "/rest/v1/hub_state?id=eq.1&select=rev", {
+    headers: cloudHeaders(false), cache:"no-store"
+  }).then(function(r){ return r.ok ? r.json() : null; }).then(function(rows){
+    if(!rows || !rows.length) return;
+    var rev = rows[0].rev;
+    if(lastRev === null){ lastRev = rev; return; }
+    if(rev === lastRev) return;
+    lastRev = rev;
+    return cloudFetchState().then(function(row){
+      if(!row || !row.data) return;
+      if(pendingOps.length || anyModalOpen()) return;  // 그사이 편집을 시작했으면 취소
+      state = normalize(row.data);
+      saveLocalOnly();
+      renderAll();
+      if(isAdmin) toast("다른 기기의 변경 내용을 반영했습니다.");
+    });
+  }).catch(function(){});
+}
+
+function startPolling(){
+  if(pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(pollCloud, 15000);
+}
+document.addEventListener("visibilitychange", function(){
+  if(!document.hidden) pollCloud();   // 탭으로 돌아오면 바로 확인
+});
+
 /* ============ 시작 ============ */
 loadSession();
 load();
@@ -3144,6 +3274,7 @@ route = parseHash();
 renderAll();
 // 캐시로 먼저 그린 뒤, DB에서 최신 내용을 받아 덮어쓴다 (첫 화면이 늦지 않게)
 bootCloud();
+startPolling();
 if(pendingNotice){
   toast(pendingNotice);
   pendingNotice="";
