@@ -1864,7 +1864,28 @@ function applySort(list){
   else if(sortBy==="priceDesc") out.sort(function(a,b){ return (b.price==null?-1:b.price)-(a.price==null?-1:a.price); });
   else if(sortBy==="clicks") out.sort(function(a,b){ return clicksOf(b)-clicksOf(a); });
   else out.sort(function(a,b){ return idx[a.id]-idx[b.id]; });
+
+  // 퍼스널컬러로 보고 있을 때는 남성 제품을 맨 뒤로 보낸다.
+  // (여성 수강생이 주 대상이므로 앞쪽은 여성 제품이 오게)
+  if(isToneView()){
+    var women=[], men=[];
+    out.forEach(function(p){ (p.male?men:women).push(p); });
+    out = women.concat(men);
+  }
   return out;
+}
+// 지금 화면이 퍼스널컬러 기준으로 보고 있는지
+function isToneView(){
+  if(route.view==="cat"){
+    var c=catById(route.id);
+    if(c && (c.group==="warm" || c.group==="cool")) return true;
+  }
+  // 제품군 안에서 톤 필터를 건 경우도 포함
+  for(var i=0;i<subCats.length;i++){
+    var sc=catById(subCats[i]);
+    if(sc && (sc.group==="warm" || sc.group==="cool")) return true;
+  }
+  return false;
 }
 function applyMale(list){
   if(!maleOnly) return list;
