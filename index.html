@@ -194,6 +194,12 @@
   .adminbar .btn:hover{background:#39414d}
   .adminbar .btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}
   .adminbar .btn.primary:hover{background:var(--brand-d)}
+  .adminbar .btn.ext{
+    text-decoration:none;display:inline-flex;align-items:center;
+    background:#232a33;border-color:#3a4350;color:#cfd6e0
+  }
+  .adminbar .btn.ext:hover{background:#39414d;color:#fff}
+  .abar-sep{width:1px;height:20px;background:#3a4350;margin:0 3px;flex:0 0 auto}
   .syncbadge{
     font-size:11.5px;font-weight:800;border-radius:999px;padding:4px 10px;
     background:#2b323c;color:#aab3c0;white-space:nowrap
@@ -548,6 +554,9 @@
     <button class="btn sm" data-act="export">내보내기</button>
     <button class="btn sm" data-act="import">불러오기</button>
     <button class="btn sm" data-act="publish">배포용 파일</button>
+    <span class="abar-sep"></span>
+    <a class="btn sm ext" href="https://www.coupang.com/" target="_blank" rel="noopener noreferrer">쿠팡 ↗</a>
+    <a class="btn sm ext" href="https://partners.coupang.com/" target="_blank" rel="noopener noreferrer">파트너스 ↗</a>
     <span class="syncbadge" id="syncBadge" style="display:none"></span>
     <span class="spacer"></span>
     <button class="btn sm" data-act="logout">로그아웃</button>
