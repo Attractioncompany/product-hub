@@ -535,7 +535,8 @@
   }
   @media print{.adminbar,.toolbar,.cardadmin,.overlay{display:none!important}}
 </style>
-<style>.cr-modal { max-width:720px; }
+<style>
+.cr-modal { max-width:720px; }
 .cr-modal footer { flex-wrap:wrap; }
 .cr-modal [hidden], .cr-editor [hidden] { display:none; }
 .cr-steps { display:flex; gap:18px; margin:0; padding:0 0 14px; list-style:none; border-bottom:1px solid var(--line); color:var(--mute); font-size:13px; }
@@ -564,6 +565,19 @@
   .cr-search { flex-direction:column; }
   .cr-steps { gap:10px; font-size:12px; }
 }
+.cr-query-label { display:block; margin:0 0 7px; color:var(--ink); font-size:13px; font-weight:600; }
+.cr-chrome-progress { margin-top:12px; }
+.cr-chrome-progress .btn, .cr-choice .btn, .cr-search .btn { min-height:44px; }
+.cr-choices { list-style:none; padding:0; margin:12px 0 0; border-top:1px solid var(--line); }
+.cr-choice { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:5px 12px; align-items:center; padding:14px 0; border-bottom:1px solid var(--line); }
+.cr-choice-title { margin:0; font-size:14px; font-weight:600; line-height:1.6; overflow-wrap:anywhere; }
+.cr-choice .cr-note { grid-column:1; margin:0; overflow-wrap:anywhere; }
+.cr-choice .btn { grid-column:2; grid-row:1/3; }
+@media(max-width:560px) {
+  .cr-choice { grid-template-columns:minmax(0,1fr); }
+  .cr-choice .btn { grid-column:1; grid-row:auto; margin-top:4px; width:100%; }
+}
+
 </style>
 </head>
 <body>
@@ -902,7 +916,8 @@
 <input type="file" id="importFile" accept="application/json,.json" style="display:none">
 <div class="toast" id="toast"></div>
 
-<script>(function (root, factory) {
+<script>
+(function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
   else root.CoupangRegistrationCore = factory();
 }(typeof globalThis !== 'undefined' ? globalThis : this, function () {
@@ -1119,14 +1134,110 @@
     RegistrationJob: RegistrationJob
   };
 }));
+
 </script>
-<script>/* Browser-only registration view. Authentication and persistence remain in the host page. */
+<script>
+/* Public page/extension bridge. Never reads cookies, credentials or extension internals. */
+(function (root) {
+  'use strict';
+  var commands = ['search', 'select', 'cancel', 'resume', 'ping'];
+  var events = ['ready', 'progress', 'choices', 'result', 'error', 'cancelled'];
+  function text(value, limit) { return typeof value === 'string' && value.length <= limit ? value.trim() : ''; }
+  function id(value) { return typeof value === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(value); }
+  function https(value) {
+    var valueText = text(value, 4096);
+    if (!/^https:\/\//i.test(valueText) || /[\u0000-\u0020\u007f\\]/.test(valueText)) return '';
+    try {
+      var url = new URL(valueText);
+      return url.protocol === 'https:' && !url.username && !url.password && !url.port ? valueText : '';
+    } catch (_) { return ''; }
+  }
+  function scalar(value) {
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : text(value, 500);
+  }
+  function publicCommand(value) {
+    if (!value || value.version !== 1 || commands.indexOf(value.type) === -1 || !id(value.draftId) || !id(value.requestId)) return null;
+    var command = {version:1, type:value.type, draftId:value.draftId, requestId:value.requestId};
+    if (value.type === 'search') {
+      command.query = text(value.query, 500);
+      if (!command.query) return null;
+    }
+    if (value.type === 'select') {
+      if (!id(value.selectionId)) return null;
+      command.selectionId = value.selectionId;
+    }
+    return command;
+  }
+  function publicEvent(value) {
+    if (!value || value.version !== 1 || events.indexOf(value.type) === -1 || !id(value.draftId) || !id(value.requestId)) return null;
+    var event = {version:1, type:value.type, draftId:value.draftId, requestId:value.requestId};
+    ['stage','code'].forEach(function(key){ if (text(value[key], 100)) event[key] = text(value[key], 100); });
+    if (value.type === 'choices') {
+      if (!Array.isArray(value.items) || value.items.length > 100) return null;
+      event.items = value.items.filter(function(item){return item && id(item.selectionId) && text(item.title, 500);}).map(function(item) {
+        var choice = {selectionId:item.selectionId, title:text(item.title, 500)};
+        ['sourceUrl','image'].forEach(function(key){if (https(item[key])) choice[key] = https(item[key]);});
+        ['color','size'].forEach(function(key){if (typeof item[key] === 'string') choice[key] = text(item[key], 500);});
+        ['price','quantity'].forEach(function(key){if (typeof item[key] === 'string' || typeof item[key] === 'number') choice[key] = scalar(item[key]);});
+        return choice;
+      });
+    }
+    if (value.type === 'result') {
+      if (!value.product || typeof value.product !== 'object') return null;
+      var product = {};
+      ['brand','name','color','size'].forEach(function(key){product[key] = text(value.product[key], 500);});
+      ['quantity','price'].forEach(function(key){product[key] = scalar(value.product[key]);});
+      ['sourceUrl','affiliateUrl','image'].forEach(function(key){product[key] = https(value.product[key]);});
+      event.product = product;
+    }
+    return event;
+  }
+  function create() {
+    var handlers = new Set(), active = null, disposed = false;
+    var origin = root.location && root.location.origin;
+    function matches(value) { return active && active.draftId === value.draftId && active.requestId === value.requestId; }
+    function receive(event) {
+      if (disposed || event.source !== root || event.origin !== origin || !event.data || event.data.source !== 'product-hub-extension') return;
+      var message = publicEvent(event.data);
+      if (!message || !matches(message)) return;
+      if (message.type === 'result' || message.type === 'cancelled') active = null;
+      handlers.forEach(function(handler) { handler(message); });
+    }
+    root.addEventListener('message', receive);
+    return {
+      send:function(value) {
+        var command = publicCommand(value);
+        if (disposed || !origin || origin === 'null' || !command) return false;
+        if (command.type === 'search' || command.type === 'resume' || command.type === 'ping') active = {draftId:command.draftId, requestId:command.requestId};
+        else if (!matches(command)) return false;
+        if (command.type === 'cancel') active = null;
+        try { root.postMessage(Object.assign({source:'product-hub-page'}, command), origin); return true; }
+        catch (_) { active = null; return false; }
+      },
+      subscribe:function(handler) {
+        if (typeof handler !== 'function' || disposed) return function(){};
+        handlers.add(handler);
+        return function(){handlers.delete(handler);};
+      },
+      dispose:function() { disposed = true; active = null; handlers.clear(); root.removeEventListener('message', receive); }
+    };
+  }
+  root.CoupangBrowserConnector = {create:create};
+})(window);
+
+</script>
+<script>
+/* Browser-only registration view. Authentication and persistence remain in the host page. */
 (function (root) {
   'use strict';
   var Core = root.CoupangRegistrationCore;
   var config, draft, editing = false, busy = false, job = null;
   var STORAGE = 'productHub.coupangDraft.v1';
+  var CONNECTION_TIMEOUT_MS = 8000;
+  // A worker stage may wait for a tab (25s), receiver (25s), then adapter (25s).
+  var WORK_TIMEOUT_MS = 90000;
   var modal, panel, returnFocus, confirmedFingerprint = '';
+  var browserConnector = null, browserRequest = null, browserTimer = null, requestSequence = 0;
   function $(id) { return document.getElementById(id); }
   function blank() {
     return {id:config.uid(), existing:false, query:'', brand:'', name:'', color:'', size:'', quantity:'',
@@ -1157,7 +1268,7 @@
   function showWizard() {
     fields.forEach(function(k) { $('cr_' + k).value = draft[k] == null ? '' : draft[k]; });
     $('cr_confirmed').checked = false; draft.confirmed = false;
-    updateLinks(); status('');
+    updateLinks(); status(''); restoreBrowser();
     $('crResume').hidden = !draft.editorData;
     config.openModal('mCoupangRegistration');
     $('cr_query').focus();
@@ -1174,6 +1285,7 @@
   function open() {
     if (!config.canEdit()) { config.toast('관리자 로그인 후 사용할 수 있습니다.'); return; }
     if (busy) { config.toast('저장 확인을 진행 중입니다.'); return; }
+    stopBrowser(false, true);
     returnFocus = document.activeElement;
     // New registration must never inherit the ID of an existing-product editor.
     if (editing) snapshotEditor(editorValues());
@@ -1207,6 +1319,7 @@
     if (!checked.valid) { status(checked.errors.join('\n'), true); return; }
     var duplicates = Core.findDuplicates(draft, config.getProducts());
     if (duplicates.length) { duplicateMessage(duplicates, false); return; }
+    stopBrowser(false, true);
     remember();
     config.closeModal('mCoupangRegistration');
     // The host owns all ordinary product fields and category selection.
@@ -1298,6 +1411,7 @@
     } finally { lock(false); }
   }
   function onProductOpened(id, product) {
+    stopBrowser(false, true);
     editing = false; job = null;
     if (panel) panel.hidden = true;
     $('btnSaveProduct').textContent = '저장';
@@ -1339,12 +1453,162 @@
     setEditorLinks();
     snapshotEditor(editorValues());
   }
+  function browserStatus(message, error) {
+    var el = $('crChromeStatus');
+    el.textContent = message || ''; el.dataset.tone = error ? 'error' : '';
+  }
+  function wizardFingerprint() {
+    return JSON.stringify(fields.map(function(key){return $('cr_' + key).value.trim();}));
+  }
+  function browserControls() {
+    $('crChromeCancel').hidden = !browserRequest;
+    $('crChromeResume').hidden = !browserRequest || browserRequest.state !== 'paused';
+    $('crContinue').disabled = !!browserRequest;
+    $('crChromeChoices').hidden = !$('crChromeChoices').children.length;
+    $('crChromeChoices').querySelectorAll('button').forEach(function(button){button.disabled = !browserRequest || browserRequest.state !== 'choices';});
+    $('crChromeProgress').hidden = !browserRequest;
+    $('crChromeProgress').setAttribute('aria-busy', browserRequest && browserRequest.state === 'working' ? 'true' : 'false');
+  }
+  function saveBrowserRequest() {
+    if (!draft || !browserRequest) return;
+    draft.chromeRequest = {requestId:browserRequest.requestId, fingerprint:browserRequest.fingerprint, query:draft.query};
+    remember();
+  }
+  function clearBrowserTimer() {
+    if (browserTimer !== null) root.clearTimeout(browserTimer);
+    browserTimer = null;
+  }
+  function watchBrowserResponse() {
+    var current = browserRequest;
+    clearBrowserTimer();
+    if (!current || current.state !== 'working' || !current.accept) return;
+    browserTimer = root.setTimeout(function(){
+      if (browserRequest !== current || current.state !== 'working' || !current.accept) return;
+      browserTimer = null; current.state = 'paused'; current.accept = false; browserControls();
+      browserStatus(current.connected ? 'Chrome 작업의 응답이 늦어지고 있습니다. 현재 화면을 확인한 뒤 작업을 재개해 주세요.' : 'Chrome 확장의 응답을 받지 못했습니다. 확장 설치·사이트 연결을 확인한 뒤 재개하거나 다시 검색해 주세요.', true);
+    }, current.connected ? WORK_TIMEOUT_MS : CONNECTION_TIMEOUT_MS);
+  }
+  function stopBrowser(announce, sendCancel) {
+    var previous = browserRequest;
+    browserRequest = null; clearBrowserTimer();
+    if (draft && draft.chromeRequest) { delete draft.chromeRequest; remember(); }
+    if (previous && sendCancel && browserConnector) {
+      try { browserConnector.send({version:1,type:'cancel',draftId:previous.draftId,requestId:previous.requestId}); } catch (_) {}
+    }
+    if ($('crChromeChoices')) { $('crChromeChoices').textContent = ''; browserControls(); }
+    if (announce) browserStatus('Chrome 작업을 중지했습니다. 입력한 내용은 유지됩니다.');
+  }
+  function restoreBrowser() {
+    browserRequest = null; clearBrowserTimer(); $('crChromeChoices').textContent = '';
+    var saved = draft.chromeRequest;
+    if (saved && /^[A-Za-z0-9_-]{1,100}$/.test(saved.requestId) && saved.query === draft.query && saved.fingerprint === wizardFingerprint()) {
+      browserRequest = {draftId:draft.id,requestId:saved.requestId,fingerprint:saved.fingerprint,state:'paused',accept:false,connected:false};
+      browserStatus('보관한 Chrome 작업이 있습니다. Chrome의 현재 화면을 확인한 뒤 작업을 재개해 주세요.');
+    } else {
+      if (saved) { delete draft.chromeRequest; remember(); }
+      browserStatus(browserConnector ? '제품명을 입력하면 로그인된 Chrome에서 검색합니다.' : 'Chrome 확장 연결이 필요합니다. 아래 파트너스 링크에서 직접 진행할 수도 있습니다.');
+    }
+    browserControls();
+  }
+  function dispatchBrowser(type, selectionId) {
+    var current = browserRequest;
+    if (!current || !browserConnector) return false;
+    if (!config.canEdit()) { stopBrowser(false, true); browserStatus('관리자 로그인이 필요합니다.', true); return false; }
+    if (current.fingerprint !== wizardFingerprint()) { stopBrowser(false, true); browserStatus('입력이 바뀌었습니다. 변경한 제품명으로 다시 검색해 주세요.', true); return false; }
+    var command = {version:1,type:type,draftId:current.draftId,requestId:current.requestId};
+    if (type === 'search') command.query = draft.query;
+    if (type === 'select') command.selectionId = selectionId;
+    current.state = 'working'; current.accept = true; browserControls(); saveBrowserRequest(); watchBrowserResponse();
+    try {
+      if (browserConnector.send(command) !== false) return true;
+    } catch (_) {}
+    clearBrowserTimer(); current.state = 'paused'; current.accept = false; browserControls();
+    browserStatus('Chrome 확장에 연결하지 못했습니다. 확장과 허브 사이트 접근 권한을 확인해 주세요.', true);
+    return false;
+  }
+  function searchChrome() {
+    if (!config.canEdit()) { browserStatus('관리자 로그인이 필요합니다.', true); return; }
+    readWizard();
+    if (!draft.query) { status('검색할 제품명을 입력해 주세요.', true); $('cr_query').focus(); return; }
+    if (draft.query.length > 500) { status('검색어는 500자 이내로 입력해 주세요.', true); return; }
+    stopBrowser(false, true);
+    $('cr_confirmed').checked = false; draft.confirmed = false; remember();
+    if (!browserConnector) { browserStatus('Chrome 확장 연결이 필요합니다. 아래 파트너스 링크에서 직접 진행할 수도 있습니다.', true); return; }
+    browserRequest = {draftId:draft.id,requestId:'chrome-' + config.uid().slice(0,70) + '-' + (++requestSequence),fingerprint:wizardFingerprint(),state:'working',accept:true,connected:false};
+    browserStatus('Chrome 확장 연결을 확인하고 있습니다…'); status('');
+    dispatchBrowser('search');
+  }
+  function showChoices(items) {
+    var list = $('crChromeChoices'); list.textContent = '';
+    (Array.isArray(items) ? items.slice(0,100) : []).forEach(function(item) {
+      if (!item || typeof item.title !== 'string' || !item.title.trim() || !/^[A-Za-z0-9_-]{1,100}$/.test(item.selectionId)) return;
+      var row = document.createElement('li'), title = document.createElement('p'), detail = document.createElement('p'), button = document.createElement('button');
+      row.className = 'cr-choice'; title.className = 'cr-choice-title'; title.textContent = item.title.slice(0,500);
+      detail.className = 'cr-note';
+      var options = [];
+      ['color','size'].forEach(function(key){if (typeof item[key] === 'string' && item[key].trim()) options.push(item[key].trim().slice(0,500));});
+      if ((typeof item.quantity === 'string' || typeof item.quantity === 'number') && String(item.quantity).trim()) options.push('수량: ' + item.quantity);
+      if ((typeof item.price === 'string' || typeof item.price === 'number') && String(item.price).trim()) options.push('가격: ' + item.price);
+      detail.textContent = options.length ? options.join(' · ') : '색상·용량·수량은 상품 화면에서 확인합니다.';
+      button.type = 'button'; button.className = 'btn sm'; button.textContent = '이 상품 확인'; button.setAttribute('aria-label','이 상품 확인: ' + item.title.slice(0,500));
+      var requestId = browserRequest.requestId;
+      button.addEventListener('click',function(){
+        if (!browserRequest || browserRequest.requestId !== requestId || browserRequest.state !== 'choices') return;
+        browserStatus('선택한 상품과 옵션, 제휴 링크의 목적지를 확인하고 있습니다…');
+        dispatchBrowser('select', item.selectionId);
+      });
+      row.appendChild(title); row.appendChild(detail); row.appendChild(button); list.appendChild(row);
+    });
+    browserRequest.state = 'choices'; browserControls(); saveBrowserRequest();
+    browserStatus(list.children.length ? '등록할 상품을 선택해 주세요. 확인되지 않은 옵션은 다음 단계에서 직접 입력합니다.' : '검색 후보를 찾지 못했습니다. 검색어를 바꾸거나 파트너스에서 직접 확인해 주세요.', !list.children.length);
+  }
+  function applyBrowserResult(product) {
+    var identity = product && Core.parseCoupangIdentity(product.sourceUrl);
+    if (!identity || !identity.itemId || !Core.validateAffiliateUrl(product.affiliateUrl)) {
+      stopBrowser(false, false); browserStatus('상품 주소나 제휴 링크를 확인하지 못했습니다. Chrome에서 상품을 다시 확인해 주세요.', true); return;
+    }
+    fields.filter(function(key){return key !== 'query';}).forEach(function(key){
+      var value = product[key];
+      draft[key] = typeof value === 'string' && value.length <= 4096 ? value.trim() : typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : '';
+      $('cr_' + key).value = draft[key];
+    });
+    draft.confirmed = false; $('cr_confirmed').checked = false; delete draft.editorData;
+    stopBrowser(false, false); remember(); updateLinks(); $('crResume').hidden = true;
+    var missing = [['brand','브랜드'],['name','제품명'],['color','색상'],['size','용량'],['quantity','수량']].filter(function(entry){return !String(draft[entry[0]]).trim();}).map(function(entry){return entry[1];});
+    browserStatus(missing.length ? '상품 초안을 가져왔습니다. 비어 있는 ' + missing.join('·') + '은 직접 입력하고 상품과 링크를 확인해 주세요.' : '상품 초안을 가져왔습니다. 상품·옵션·제휴 링크를 직접 확인한 뒤 아래 확인란에 체크해 주세요.');
+  }
+  function onBrowserEvent(event) {
+    var current = browserRequest;
+    if (!current || !current.accept || !draft || editing || !config.canEdit() || !modal.classList.contains('on') || !event || event.version !== 1 || event.draftId !== draft.id || event.draftId !== current.draftId || event.requestId !== current.requestId) return;
+    if (current.fingerprint !== wizardFingerprint()) { stopBrowser(false, true); return; }
+    if (['ready','progress','choices','result','error','cancelled'].indexOf(event.type) === -1) return;
+    current.connected = true;
+    if (event.type === 'choices') { clearBrowserTimer(); showChoices(event.items); return; }
+    if (event.type === 'result') { applyBrowserResult(event.product); return; }
+    if (event.type === 'cancelled') { stopBrowser(true, false); return; }
+    if (event.type === 'ready') { if (current.state === 'working') { watchBrowserResponse(); browserStatus('Chrome 연결을 확인했습니다. 검색 결과를 기다리고 있습니다…'); } return; }
+    if (event.type === 'progress') {
+      if (current.state !== 'working') return;
+      watchBrowserResponse();
+      var stages = {search:'Chrome에서 제품을 검색하고 있습니다…',searching:'Chrome에서 제품을 검색하고 있습니다…',choices:'검색 후보를 준비하고 있습니다…',link:'본인 파트너스 계정의 제휴 링크를 확인하고 있습니다…',inspect:'선택한 상품과 옵션을 확인하고 있습니다…',inspecting:'선택한 상품과 옵션을 확인하고 있습니다…',verify:'제휴 링크의 상품 목적지를 확인하고 있습니다…',result:'상품 초안을 준비하고 있습니다…'};
+      browserStatus(stages[event.stage] || 'Chrome에서 상품 정보를 확인하고 있습니다…'); return;
+    }
+    if (event.type !== 'error') return;
+    clearBrowserTimer();
+    var errors = {LOGIN_REQUIRED:'Chrome의 쿠팡 파트너스에 로그인한 뒤 재개해 주세요.',CAPTCHA:'Chrome에서 보안 확인을 직접 완료한 뒤 재개해 주세요.',ACCESS_BLOCKED:'Chrome의 접근 제한 안내를 확인해 주세요. 정상 화면으로 돌아온 뒤 재개할 수 있습니다.',BLOCKED:'Chrome의 접근 제한 안내를 확인한 뒤 재개해 주세요.',UI_CHANGED:'Chrome 화면의 검색·상품·링크 영역을 확인한 뒤 재개해 주세요. 계속되면 직접 등록할 수 있습니다.',NEEDS_USER_ACTION:'Chrome에서 필요한 상품·옵션 선택을 직접 완료한 뒤 재개해 주세요.',TIMEOUT:'Chrome의 현재 화면을 확인한 뒤 재개해 주세요.',ADAPTER_UNAVAILABLE:'Chrome 화면을 새로고침한 뒤 재개해 주세요.',WORKER_RESTARTED:'Chrome 연결이 다시 시작되었습니다. 현재 화면을 확인한 뒤 재개해 주세요.',SEARCH_RESTART_REQUIRED:'이전 검색을 이어갈 수 없습니다. 제품명으로 다시 검색해 주세요.',TAB_CLOSED:'작업하던 Chrome 탭이 닫혔습니다. 제품명으로 다시 검색해 주세요.',IDENTITY_MISMATCH:'선택한 상품과 제휴 링크의 목적지가 다릅니다. 다시 검색해 주세요.',INVALID_SOURCE:'선택한 옵션의 상품 주소를 확인하지 못했습니다. 다시 검색해 주세요.',INVALID_LINK:'본인 파트너스 링크를 확인하지 못했습니다. 다시 검색해 주세요.'};
+    var resumable = ['LOGIN_REQUIRED','CAPTCHA','ACCESS_BLOCKED','BLOCKED','UI_CHANGED','NEEDS_USER_ACTION','TIMEOUT','ADAPTER_UNAVAILABLE','WORKER_RESTARTED'].indexOf(event.code) !== -1;
+    if (resumable) { current.state = 'paused'; current.accept = false; browserControls(); saveBrowserRequest(); }
+    else stopBrowser(false, false);
+    browserStatus(errors[event.code] || 'Chrome 작업을 마치지 못했습니다. 현재 화면을 확인하고 다시 검색해 주세요.', true);
+  }
   function markup() {
     return '<div class="modal cr-modal" role="dialog" aria-modal="true" aria-labelledby="crTitle">' +
       '<header><h3 id="crTitle">쿠팡 상품 등록</h3><button class="close" data-close aria-label="닫기">×</button></header>' +
       '<div class="body"><ol class="cr-steps"><li aria-current="step">1. 제품 검색</li><li>2. 상품·링크 확인</li><li>3. 수정 후 저장</li></ol>' +
-      '<section class="cr-section"><h4>어떤 제품을 등록할까요?</h4><div class="cr-search"><input id="cr_query" aria-label="검색할 제품명" placeholder="예) 니베아 컬러 립밤 딥 레드"><button class="btn primary" id="crSearch">파트너스에서 검색</button></div>' +
-      '<p class="cr-note">검색 결과에서 색상·용량·수량을 확인하고 본인 계정의 링크를 만들어 주세요.</p></section>' +
+      '<section class="cr-section"><h4>어떤 제품을 등록할까요?</h4><label class="cr-query-label" for="cr_query">검색할 제품명</label><div class="cr-search"><input id="cr_query" aria-label="검색할 제품명" maxlength="500" placeholder="예) 니베아 컬러 립밤 딥 레드"><button class="btn primary" id="crSearch">Chrome으로 검색</button></div>' +
+      '<p class="cr-note">로그인된 Chrome에서 검색하고 본인 파트너스 계정의 링크를 확인합니다. 가져온 초안은 아래에서 직접 검토해 주세요.</p>' +
+      '<div id="crChromeProgress" class="cr-actions cr-chrome-progress" hidden><button class="btn sm" id="crChromeCancel" type="button">Chrome 작업 중지</button><button class="btn sm" id="crChromeResume" type="button" hidden>Chrome 작업 재개</button></div>' +
+      '<p id="crChromeStatus" class="cr-status" role="status" aria-live="polite"></p><ul id="crChromeChoices" class="cr-choices" aria-label="Chrome 검색 후보" hidden></ul></section>' +
       '<section class="cr-section"><h4>선택한 상품</h4><div class="cr-grid">' +
       field('sourceUrl','쿠팡 상품 주소','https://www.coupang.com/vp/products/…?itemId=…',true) +
       field('brand','브랜드','예) 니베아') + field('name','제품명','예) 케어 앤 컬러 립밤') +
@@ -1353,7 +1617,7 @@
       field('image','이미지 주소 (선택)','https://…',true) +
       field('affiliateUrl','본인 쿠팡 파트너스 링크','https://link.coupang.com/a/…',true) + '</div>' +
       '<div class="cr-actions"><a class="btn sm" id="crSource" target="_blank" rel="noopener noreferrer" hidden>선택 상품 열기</a>' +
-      '<a class="btn sm" id="crPartners" target="_blank" rel="noopener noreferrer">파트너스에서 링크 만들기</a></div></section>' +
+      '<a class="btn sm" id="crPartners" target="_blank" rel="noopener noreferrer">파트너스에서 직접 검색·링크 만들기</a></div></section>' +
       '<label class="cr-check"><input type="checkbox" id="cr_confirmed"><span>브랜드·제품·색상·용량·수량이 모두 일치하며, 본인 파트너스 계정에서 만든 링크임을 확인했습니다.</span></label>' +
       '<p id="crStatus" class="cr-status" role="status" aria-live="polite"></p></div>' +
       '<footer><button class="btn" id="crNewDraft">초안 비우기</button><button class="btn" data-close>취소</button><button class="btn primary" id="crContinue">내용 수정으로 이동</button></footer></div>';
@@ -1371,16 +1635,22 @@
       '<label class="cr-check"><input id="crEditConfirmed" type="checkbox"><span>수정한 내용과 제휴 링크 목적지의 브랜드·제품·색상·용량·수량이 모두 일치합니다.</span></label><p id="crEditorStatus" class="cr-status" role="status" aria-live="polite"></p>';
     $('mProduct').querySelector('.body').prepend(panel);
     $('btnCoupangRegistration').addEventListener('click',open);
-    modal.addEventListener('input',function(event) { if(event.target.id!=='cr_confirmed') $('cr_confirmed').checked=false; readWizard(); remember(); updateLinks(); });
-    $('crSearch').addEventListener('click',function(){readWizard(); if(!draft.query){status('검색할 제품명을 입력해 주세요.',true);$('cr_query').focus();return;} remember(); root.open(searchUrl(),'_blank','noopener,noreferrer');});
+    modal.addEventListener('input',function(event) { if(event.target.id!=='cr_confirmed') { if(browserRequest) { stopBrowser(false,true); browserStatus('입력이 바뀌어 Chrome 작업을 중지했습니다. 변경한 제품명으로 다시 검색해 주세요.'); } $('cr_confirmed').checked=false; } readWizard(); remember(); updateLinks(); });
+    try { browserConnector = config.browserConnector || (root.CoupangBrowserConnector && root.CoupangBrowserConnector.create()); } catch (_) { browserConnector = null; }
+    if (browserConnector && typeof browserConnector.send === 'function' && typeof browserConnector.subscribe === 'function') browserConnector.subscribe(onBrowserEvent);
+    else browserConnector = null;
+    $('crSearch').addEventListener('click',searchChrome);
+    $('crChromeCancel').addEventListener('click',function(){stopBrowser(true,true);});
+    $('crChromeResume').addEventListener('click',function(){if(!config.canEdit()){browserStatus('관리자 로그인이 필요합니다.',true);return;}if(browserRequest&&browserRequest.state==='paused'){browserStatus('Chrome의 현재 화면을 다시 확인하고 있습니다…');dispatchBrowser('resume');}});
+    modal.addEventListener('click',function(e){if(e.target.closest('[data-close]'))stopBrowser(false,true);});
     $('cr_query').addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();$('crSearch').click();}});
     $('crContinue').addEventListener('click',function(){ if(draft && draft.editorData) {readWizard(); var check=Core.validateDraft(draft); if(!check.valid){status(check.errors.join('\n'),true);return;} delete draft.editorData; } transfer(); });
-    $('crNewDraft').addEventListener('click',function(){ if(!root.confirm('보관 중인 초안을 비울까요?'))return; draft=blank(); job=null; remember(); showWizard(); });
+    $('crNewDraft').addEventListener('click',function(){ if(!root.confirm('보관 중인 초안을 비울까요?'))return; stopBrowser(false,true); draft=blank(); job=null; remember(); showWizard(); });
     // Resume the exact attempted ID rather than generating a second product after a reload.
     var resume=document.createElement('button'); resume.className='btn'; resume.textContent='보관한 수정 내용 이어서'; resume.id='crResume';
     modal.querySelector('footer').prepend(resume);
     resume.addEventListener('click',restoreEditor);
-    modal.addEventListener('mousedown',function(e){if(e.target===modal)config.closeModal(modal.id);});
+    modal.addEventListener('mousedown',function(e){if(e.target===modal){stopBrowser(false,true);config.closeModal(modal.id);}});
     modal.addEventListener('keydown',function(e){
       if(e.key!=='Tab')return;
       var list=Array.from(modal.querySelectorAll('input,button,a[href]')).filter(function(el){return !el.hidden && !el.disabled && el.getClientRects().length;});
@@ -1394,7 +1664,7 @@
       if(busy && !$('mProduct').contains(e.target)) {e.preventDefault();e.stopImmediatePropagation();}
     },true);
     document.addEventListener('keydown',function(e){if(busy && e.key==='Tab')e.preventDefault();},true);
-    new MutationObserver(function(){if(!modal.classList.contains('on')&&returnFocus){returnFocus.focus();returnFocus=null;}}).observe(modal,{attributes:true,attributeFilter:['class']});
+    new MutationObserver(function(){if(!modal.classList.contains('on')){stopBrowser(false,true);if(returnFocus){returnFocus.focus();returnFocus=null;}}}).observe(modal,{attributes:true,attributeFilter:['class']});
   }
   // Include modules in the host's single-file export so its existing deployment tool keeps working.
   async function prepareExport(clone) {
@@ -1411,8 +1681,10 @@
   }
   root.CoupangRegistrationUI={init:init,isEditing:function(){return editing;},isSaving:function(){return busy;},saveFromEditor:saveFromEditor,onProductOpened:onProductOpened,prepareExport:prepareExport};
 })(window);
+
 </script>
-<script>(function (root, factory) {
+<script>
+(function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
   else root.AuthRecoveryCore = factory();
 }(typeof globalThis !== 'undefined' ? globalThis : this, function () {
@@ -1594,8 +1866,10 @@
   }
   return { parseRecoveryLocation: parseRecoveryLocation, validateNewPassword: validateNewPassword, createRecoveryClient: createRecoveryClient };
 }));
+
 </script>
-<script>(function(root){
+<script>
+(function(root){
   "use strict";
   var core=root.AuthRecoveryCore, incoming=null;
   if(core){
@@ -1748,6 +2022,7 @@
   }
   root.AuthRecoveryUI={init:init,isBusy:function(){return busy||!!token;},prepareExport:prepareExport};
 })(window);
+
 </script>
 <script>
 (function(){
