@@ -2,6 +2,21 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
+<script data-auth-recovery-capture>
+(function(){
+  var source={hash:window.location.hash,search:window.location.search};
+  function callback(part){
+    if(!part)return false;
+    var text=part.replace(/^[?#]/,"");
+    if(text.charAt(0)==="/")text=text.indexOf("?")>=0?text.slice(text.indexOf("?")+1):"";
+    var params=new URLSearchParams(text);
+    return ["access_token","refresh_token","token_hash","provider_token","provider_refresh_token","error","error_code","error_description","code"].some(function(key){return params.has(key);}) || params.getAll("type").indexOf("recovery")!==-1;
+  }
+  if(!callback(source.hash)&&!callback(source.search))return;
+  window.history.replaceState(null,"",window.location.pathname);
+  window.consumeHubRecoveryLocation=function(){var value=source;source=null;return value;};
+})();
+</script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>제품 추천 허브</title>
 <style>
@@ -520,6 +535,36 @@
   }
   @media print{.adminbar,.toolbar,.cardadmin,.overlay{display:none!important}}
 </style>
+<style>.cr-modal { max-width:720px; }
+.cr-modal footer { flex-wrap:wrap; }
+.cr-modal [hidden], .cr-editor [hidden] { display:none; }
+.cr-steps { display:flex; gap:18px; margin:0; padding:0 0 14px; list-style:none; border-bottom:1px solid var(--line); color:var(--mute); font-size:13px; }
+.cr-steps li[aria-current="step"] { color:var(--ink); font-weight:700; }
+.cr-section { padding-top:20px; }
+.cr-section h4 { margin:0 0 12px; font-size:16px; }
+.cr-note { color:var(--mute); font-size:13px; line-height:1.7; margin:8px 0 0; }
+.cr-search { display:flex; gap:8px; }
+.cr-search input { min-width:0; flex:1; }
+.cr-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.cr-grid .field { margin:0; }
+.cr-wide { grid-column:1/-1; }
+.cr-check { display:flex; gap:10px; align-items:flex-start; font-size:14px; line-height:1.65; padding:14px; background:#f3f6f5; border-radius:9px; }
+.cr-check input { flex:0 0 auto; width:18px; height:18px; margin-top:3px; }
+.cr-status { font-size:14px; line-height:1.6; white-space:pre-line; }
+.cr-status:empty { display:none; }
+.cr-status[data-tone="error"] { color:#a12d35; }
+.cr-editor { min-inline-size:0; border:1px solid var(--line); border-radius:10px; padding:16px; margin:0; display:flex; flex-direction:column; gap:12px; }
+.cr-editor[hidden] { display:none; }
+.cr-editor legend { font-size:14px; font-weight:700; padding:0 5px; }
+.cr-actions { display:flex; flex-wrap:wrap; gap:8px; }
+.cr-modal input:focus-visible, .cr-modal button:focus-visible, .cr-modal a:focus-visible, .cr-editor input:focus-visible { outline:2px solid #16745c; outline-offset:3px; }
+@media(max-width:560px) {
+  .cr-grid { grid-template-columns:1fr; }
+  .cr-wide { grid-column:auto; }
+  .cr-search { flex-direction:column; }
+  .cr-steps { gap:10px; font-size:12px; }
+}
+</style>
 </head>
 <body>
 
@@ -548,6 +593,7 @@
   <div class="wrap">
     <span class="tag">관리자</span>
     <button class="btn sm primary" data-act="newProduct">+ 제품 추가</button>
+    <button class="btn sm" id="btnCoupangRegistration">쿠팡 상품 등록</button>
     <button class="btn sm" data-act="cats">카테고리</button>
     <button class="btn sm" data-act="settings">설정</button>
     <button class="btn sm" data-act="stats">통계</button>
@@ -844,6 +890,7 @@
         <span class="hint" id="pinHint">로그인하면 수정 내용이 모든 기기에 바로 반영됩니다.</span>
       </div>
       <div class="qstate" id="loginState"></div>
+      <button type="button" class="btn sm ghost" id="btnForgotPassword">비밀번호 찾기</button>
     </div>
     <footer>
       <button class="btn" data-close>취소</button>
@@ -855,6 +902,853 @@
 <input type="file" id="importFile" accept="application/json,.json" style="display:none">
 <div class="toast" id="toast"></div>
 
+<script>(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.CoupangRegistrationCore = factory();
+}(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+  'use strict';
+
+  function httpsUrl(value) {
+    if (typeof value !== 'string') return null;
+    var text = value.trim();
+    if (!/^https:\/\//i.test(text) || /[\u0000-\u0020\u007f\\]/.test(text)) return null;
+    var authority = text.slice(text.indexOf('//') + 2).split(/[/?#]/)[0];
+    // URL.port omits an explicit default :443, so inspect the authority too.
+    if (authority.indexOf('@') !== -1 || authority.indexOf(':') !== -1) return null;
+    try {
+      var url = new URL(text);
+      if (url.protocol !== 'https:' || url.username || url.password || url.port) return null;
+      return url;
+    } catch (_) { return null; }
+  }
+
+  function queryId(params, key) {
+    var values = params.getAll(key);
+    if (!values.length) return null;
+    if (!values.every(function (value) { return /^[1-9]\d*$/.test(value) && value === values[0]; })) {
+      return undefined;
+    }
+    return values[0];
+  }
+
+  function parseCoupangIdentity(value) {
+    var url = httpsUrl(value);
+    if (!url || ['coupang.com', 'www.coupang.com', 'm.coupang.com'].indexOf(url.hostname) === -1) return null;
+    var path = /^\/vp\/products\/([1-9]\d*)\/?$/.exec(url.pathname);
+    if (!path) return null;
+    var productId = queryId(url.searchParams, 'productId');
+    var itemId = queryId(url.searchParams, 'itemId');
+    var vendorItemId = queryId(url.searchParams, 'vendorItemId');
+    if (productId === undefined || itemId === undefined || vendorItemId === undefined) return null;
+    if (productId !== null && productId !== path[1]) return null;
+    return { productId: path[1], itemId: itemId, vendorItemId: vendorItemId, url: url.href };
+  }
+
+  function validateAffiliateUrl(value) {
+    var url = httpsUrl(value);
+    return !!(url && url.hostname === 'link.coupang.com' && /^\/a\/[^/]+\/?$/.test(url.pathname));
+  }
+
+  function isPresent(value) {
+    return value !== undefined && value !== null && !(typeof value === 'string' && !value.trim());
+  }
+
+  function safeImage(value) {
+    if (typeof value !== 'string') return false;
+    if (/^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+={0,2}$/i.test(value.trim())) return true;
+    return !!httpsUrl(value);
+  }
+
+  function validateDraft(value) {
+    var draft = value && typeof value === 'object' ? value : {};
+    var errors = [];
+    var required = { brand: '브랜드', name: '상품명', color: '색상', size: '용량' };
+    Object.keys(required).forEach(function (field) {
+      if (typeof draft[field] !== 'string' || !draft[field].trim()) errors.push(required[field] + '을 입력해 주세요.');
+    });
+    var quantity = draft.quantity;
+    if (typeof quantity === 'string' && /^\d+$/.test(quantity.trim())) quantity = Number(quantity.trim());
+    if (typeof quantity !== 'number' || !Number.isSafeInteger(quantity) || quantity <= 0) {
+      errors.push('수량은 1 이상의 정수로 입력해 주세요.');
+    }
+    var identity = parseCoupangIdentity(draft.sourceUrl);
+    if (!identity || !identity.itemId) errors.push('선택한 옵션의 itemId가 포함된 쿠팡 상품 주소를 입력해 주세요.');
+    if (!validateAffiliateUrl(draft.affiliateUrl)) errors.push('쿠팡 파트너스에서 발급한 제휴 링크를 입력해 주세요.');
+    if (draft.confirmed !== true) errors.push('상품과 옵션, 제휴 링크의 목적지가 일치하는지 확인해 주세요.');
+    if (isPresent(draft.image) && !safeImage(draft.image)) errors.push('이미지는 HTTPS 주소 또는 지원되는 이미지 파일로 입력해 주세요.');
+    if (isPresent(draft.price)) {
+      var price = draft.price;
+      if (typeof price === 'string' && /^(?:\d+(?:\.\d*)?|\.\d+)$/.test(price.trim())) price = Number(price.trim());
+      if (typeof price !== 'number' || !Number.isFinite(price) || price < 0) errors.push('가격은 0 이상의 숫자로 입력해 주세요.');
+    }
+    return { valid: errors.length === 0, errors: errors };
+  }
+
+  function sourceIdentity(value) {
+    return parseCoupangIdentity(value.sourceUrl) || parseCoupangIdentity(value.srcUrl);
+  }
+
+  function affiliateIdentity(value) {
+    if (!validateAffiliateUrl(value)) return null;
+    var url = httpsUrl(value);
+    url.hash = '';
+    url.pathname = url.pathname.replace(/\/$/, '');
+    return url.href;
+  }
+
+  function findDuplicates(value, products) {
+    var draft = value && typeof value === 'object' ? value : {};
+    var identity = sourceIdentity(draft);
+    var affiliate = affiliateIdentity(draft.affiliateUrl);
+    if (!Array.isArray(products)) return [];
+    return products.filter(function (product) {
+      if (!product || typeof product !== 'object') return false;
+      var other = sourceIdentity(product);
+      if (identity && identity.itemId && other && identity.itemId === other.itemId) return true;
+      if (!affiliate) return false;
+      if (affiliateIdentity(product.affiliateUrl) === affiliate) return true;
+      return Array.isArray(product.links) && product.links.some(function (link) {
+        return link && affiliateIdentity(link.url) === affiliate;
+      });
+    });
+  }
+
+  function snapshot(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function sameFields(expected, actual, fields) {
+    return fields.every(function (field) {
+      return !Object.prototype.hasOwnProperty.call(expected, field) || expected[field] === actual[field];
+    });
+  }
+
+  function sameList(expected, actual) {
+    return Array.isArray(actual) && JSON.stringify(expected.slice().sort()) === JSON.stringify(actual.slice().sort());
+  }
+
+  function productMatches(expected, actual) {
+    if (!actual || typeof actual !== 'object' || expected.id !== actual.id) return false;
+    if (!sameFields(expected, actual, ['brand', 'name', 'color', 'srcUrl', 'sourceUrl', 'desc', 'price', 'image', 'male'])) return false;
+    for (var i = 0; i < 2; i++) {
+      var field = ['catIds', 'tags'][i];
+      if (Object.prototype.hasOwnProperty.call(expected, field)) {
+        if (!Array.isArray(expected[field]) || !sameList(expected[field], actual[field])) return false;
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(expected, 'links')) {
+      if (!Array.isArray(expected.links) || !Array.isArray(actual.links) || expected.links.length !== actual.links.length) return false;
+      return expected.links.every(function (link, index) {
+        var savedLink = actual.links[index];
+        return link && savedLink && sameFields(link, savedLink, ['id', 'url', 'preset', 'label', 'price']);
+      });
+    }
+    return true;
+  }
+
+  function RegistrationJob(options) {
+    if (!options || typeof options.saveProduct !== 'function' || typeof options.findSaved !== 'function') {
+      throw new TypeError('저장과 저장 확인 함수를 제공해 주세요.');
+    }
+    this._saveProduct = options.saveProduct;
+    this._findSaved = options.findSaved;
+    this._id = null;
+    this._inFlight = null;
+    this._submitted = null;
+    this.state = 'review';
+    this.product = null;
+    this.error = null;
+  }
+
+  RegistrationJob.prototype.submit = function (product) {
+    var desired;
+    try {
+      desired = snapshot(product);
+      if (!desired || typeof desired.id !== 'string' || !desired.id.trim()) throw new Error('저장할 상품의 ID가 필요합니다.');
+    } catch (error) {
+      if (!this._inFlight) {
+        this.state = 'failed';
+        this.error = error;
+        if (desired) this.product = desired;
+      }
+      return Promise.reject(error);
+    }
+    if (this._id !== null && this._id !== desired.id) {
+      return Promise.reject(new Error('다시 저장할 때는 같은 상품 ID를 사용해 주세요.'));
+    }
+    if (this._inFlight) {
+      if (productMatches(this._submitted, desired) && productMatches(desired, this._submitted)) return this._inFlight;
+      return Promise.reject(new Error('저장 중에는 상품 내용을 바꿀 수 없습니다. 저장이 끝난 뒤 다시 시도해 주세요.'));
+    }
+
+    var self = this;
+    this._id = desired.id;
+    this._submitted = desired;
+    this.product = snapshot(desired);
+    this.error = null;
+    this.state = 'saving';
+    this._inFlight = Promise.resolve().then(async function () {
+      // An earlier attempt may have persisted even when its response was lost.
+      var existing = await self._findSaved(snapshot(desired));
+      if (productMatches(desired, existing)) return existing;
+
+      var writeError = null;
+      try { await self._saveProduct(snapshot(desired)); }
+      catch (error) { writeError = error instanceof Error ? error : new Error(String(error)); }
+
+      // A rejected write can still have reached storage. Always read it back.
+      var persisted = await self._findSaved(snapshot(desired));
+      if (productMatches(desired, persisted)) return persisted;
+      throw writeError || new Error('저장한 상품의 내용을 확인하지 못했습니다. 입력을 유지한 채 다시 시도해 주세요.');
+    }).then(function (saved) {
+      self.state = 'complete';
+      return saved;
+    }, function (error) {
+      self.state = 'failed';
+      self.error = error instanceof Error ? error : new Error(String(error));
+      throw self.error;
+    }).finally(function () { self._inFlight = null; });
+    return this._inFlight;
+  };
+
+  return {
+    parseCoupangIdentity: parseCoupangIdentity,
+    validateAffiliateUrl: validateAffiliateUrl,
+    validateDraft: validateDraft,
+    findDuplicates: findDuplicates,
+    RegistrationJob: RegistrationJob
+  };
+}));
+</script>
+<script>/* Browser-only registration view. Authentication and persistence remain in the host page. */
+(function (root) {
+  'use strict';
+  var Core = root.CoupangRegistrationCore;
+  var config, draft, editing = false, busy = false, job = null;
+  var STORAGE = 'productHub.coupangDraft.v1';
+  var modal, panel, returnFocus, confirmedFingerprint = '';
+  function $(id) { return document.getElementById(id); }
+  function blank() {
+    return {id:config.uid(), existing:false, query:'', brand:'', name:'', color:'', size:'', quantity:'',
+      sourceUrl:'', affiliateUrl:'', price:'', image:'', description:'', confirmed:false};
+  }
+  function status(message, error, inEditor) {
+    var el = $(inEditor ? 'crEditorStatus' : 'crStatus');
+    el.textContent = message || ''; el.dataset.tone = error ? 'error' : '';
+  }
+  function remember() {
+    try { sessionStorage.setItem(draft.existing ? STORAGE + '.edit.' + draft.id : STORAGE, JSON.stringify(draft)); }
+    catch (_) { status('이 창에서는 초안 보관이 제한됩니다. 저장이 끝날 때까지 창을 유지해 주세요.', true, editing); }
+  }
+  function restore() {
+    try {
+      var d = JSON.parse(sessionStorage.getItem(STORAGE) || 'null');
+      if (d && typeof d.id === 'string' && d.id.length < 100) {
+        draft = Object.assign(blank(), d, {confirmed:false, existing:false}); return;
+      }
+    } catch (_) { /* A damaged draft must never prevent opening the administrator. */ }
+    draft = blank();
+  }
+  var fields = ['query','brand','name','color','size','quantity','sourceUrl','affiliateUrl','price','image'];
+  function readWizard() {
+    fields.forEach(function(k) { draft[k] = $('cr_' + k).value.trim(); });
+    draft.confirmed = $('cr_confirmed').checked;
+  }
+  function showWizard() {
+    fields.forEach(function(k) { $('cr_' + k).value = draft[k] == null ? '' : draft[k]; });
+    $('cr_confirmed').checked = false; draft.confirmed = false;
+    updateLinks(); status('');
+    $('crResume').hidden = !draft.editorData;
+    config.openModal('mCoupangRegistration');
+    $('cr_query').focus();
+  }
+  function searchUrl() {
+    return 'https://partners.coupang.com/#affiliate/ws/link/0/' + encodeURIComponent(draft.query || draft.name || '');
+  }
+  function updateLinks() {
+    $('crPartners').href = searchUrl();
+    var identity = Core.parseCoupangIdentity(draft.sourceUrl);
+    $('crSource').hidden = !identity;
+    if (identity) $('crSource').href = identity.url;
+  }
+  function open() {
+    if (!config.canEdit()) { config.toast('관리자 로그인 후 사용할 수 있습니다.'); return; }
+    if (busy) { config.toast('저장 확인을 진행 중입니다.'); return; }
+    returnFocus = document.activeElement;
+    // New registration must never inherit the ID of an existing-product editor.
+    if (editing) snapshotEditor(editorValues());
+    restore();
+    editing = false; panel.hidden = true;
+    showWizard();
+  }
+  function optionLine() { return '옵션: ' + draft.size + ' · ' + Number(draft.quantity) + '개'; }
+  function setEditorLinks() {
+    var source = Core.parseCoupangIdentity($('f_src').value);
+    $('crEditorSource').hidden = !source;
+    if (source) $('crEditorSource').href = source.url;
+    var link = Array.from($('linkList').querySelectorAll('.lk-url')).map(function(el){ return el.value.trim(); }).find(Core.validateAffiliateUrl);
+    $('crEditorLink').hidden = !link;
+    if (link) $('crEditorLink').href = link;
+  }
+  function activateEditor() {
+    editing = true;
+    panel.hidden = false;
+    $('crEditSize').value = draft.size;
+    $('crEditQuantity').value = draft.quantity;
+    $('crEditConfirmed').checked = false;
+    confirmedFingerprint = '';
+    $('btnSaveProduct').textContent = '확인 후 저장';
+    status('상품과 링크 목적지의 내용을 확인한 뒤 체크해 주세요.', false, true);
+    setEditorLinks(); snapshotEditor(editorValues());
+  }
+  function transfer() {
+    readWizard();
+    var checked = Core.validateDraft(draft);
+    if (!checked.valid) { status(checked.errors.join('\n'), true); return; }
+    var duplicates = Core.findDuplicates(draft, config.getProducts());
+    if (duplicates.length) { duplicateMessage(duplicates, false); return; }
+    remember();
+    config.closeModal('mCoupangRegistration');
+    // The host owns all ordinary product fields and category selection.
+    config.openProduct(null);
+    $('f_brand').value = draft.brand; $('f_name').value = draft.name;
+    $('f_color').value = draft.color; $('f_src').value = draft.sourceUrl;
+    $('f_price').value = draft.price; $('f_desc').value = draft.description || '';
+    config.setImage(draft.image);
+    config.setAffiliate(draft.affiliateUrl);
+    activateEditor(); $('f_name').focus();
+  }
+  function duplicateMessage(products, inEditor) {
+    status('같은 쿠팡 상품이 이미 있습니다: ' + products.map(function(p){ return [p.brand,p.name,p.color].filter(Boolean).join(' '); }).join(', ') +
+      '\n새 등록을 멈췄습니다. 기존 제품에서 카테고리나 구매 링크를 수정해 주세요.', true, inEditor);
+  }
+  function snapshotEditor(data) {
+    draft.brand = data.brand; draft.name = data.name; draft.color = data.color;
+    draft.size = $('crEditSize').value.trim(); draft.quantity = $('crEditQuantity').value.trim();
+    draft.sourceUrl = data.srcUrl; draft.price = data.price; draft.image = data.image;
+    draft.description = data.desc;
+    draft.affiliateUrl = (data.links.find(function(l){return Core.validateAffiliateUrl(l.url);}) || {}).url || '';
+    draft.confirmed = $('crEditConfirmed').checked;
+    draft.editorData = data;
+    remember();
+  }
+  function editorValues() {
+    function value(id) { return $(id).value.trim(); }
+    var raw=value('f_price').replace(/[^0-9]/g,'');
+    return {brand:value('f_brand'),name:value('f_name'),color:value('f_color'),srcUrl:value('f_src'),
+      desc:value('f_desc'),price:raw?Number(raw):null,image:config.getImage(),tags:value('f_tags').split(',').map(function(v){return v.trim();}).filter(Boolean),male:$('f_male').checked,
+      catIds:Array.from($('f_cats').querySelectorAll('input:checked')).map(function(el){return el.value;}),
+      links:Array.from($('linkList').querySelectorAll('[data-lrow]')).map(function(row){
+        function v(sel){return row.querySelector(sel).value.trim();}
+        var price=v('.lk-price').replace(/[^0-9]/g,'');
+        return {id:v('.lk-id'),preset:v('.lk-preset'),label:v('.lk-label'),url:v('.lk-url'),price:price?Number(price):null,clicks:Number(v('.lk-clicks'))||0};
+      }).filter(function(link){return link.url;})};
+  }
+  function editorFingerprint() {
+    return JSON.stringify([editorValues(),$('crEditSize').value.trim(),$('crEditQuantity').value.trim()]);
+  }
+  function lock(value) {
+    busy = value;
+    // Keep the attempted payload stable until its result is known.
+    $('mProduct').querySelectorAll('input,textarea,select,button').forEach(function(el) {
+      if (value) { el.dataset.crDisabled = el.disabled ? '1' : '0'; el.disabled = true; }
+      else if (el.dataset.crDisabled !== undefined) { el.disabled = el.dataset.crDisabled === '1'; delete el.dataset.crDisabled; }
+    });
+    if(value) { $('crEditorStatus').tabIndex=-1; $('crEditorStatus').focus(); }
+  }
+  function makeJob() {
+    return new Core.RegistrationJob({saveProduct:config.saveProduct, findSaved:config.findSaved});
+  }
+  function saveError(error) {
+    var message = error && error.message ? error.message : '';
+    if (/401|403|permission|policy/i.test(message)) return '저장 권한을 확인하지 못했습니다. 관리자 계정으로 다시 로그인해 주세요.';
+    if (/Abort|fetch|network|저장 실패 \(\d+\)/i.test(message)) return '서버 연결이 원활하지 않아 저장을 확인하지 못했습니다.';
+    return message || '저장을 확인하지 못했습니다.';
+  }
+  async function saveFromEditor(data) {
+    if (!editing || busy) return;
+    if (!config.canEdit()) { status('관리자 로그인이 만료되었습니다. 초안을 유지한 채 다시 로그인해 주세요.', true, true); return; }
+    snapshotEditor(data);
+    if (draft.confirmed && confirmedFingerprint !== editorFingerprint()) {
+      draft.confirmed = false; $('crEditConfirmed').checked = false;
+    }
+    var result = Core.validateDraft(draft);
+    if (!data.catIds.length) result.errors.push('카테고리를 하나 이상 선택해 주세요.');
+    if (data.links.filter(function(l){return Core.validateAffiliateUrl(l.url);}).length !== 1)
+      result.errors.push('확인할 쿠팡 파트너스 링크를 하나만 넣어 주세요.');
+    if (result.errors.length) { status(result.errors.join('\n'), true, true); return; }
+    var others = Core.findDuplicates(draft, config.getProducts()).filter(function(p){return p.id !== draft.id;});
+    if (others.length) { duplicateMessage(others, true); return; }
+    var product = Object.assign({}, data, {id:draft.id, createdAt:draft.createdAt || Date.now(), desc:optionLine() + (data.desc ? '\n' + data.desc : '')});
+    draft.createdAt = product.createdAt; draft.attempt = product; remember();
+    if (!job) job = makeJob();
+    lock(true); status('서버 저장과 공개 데이터 반영을 확인하고 있습니다…', false, true);
+    try {
+      var saved = await job.submit(product);
+      lock(false);
+      config.applySaved(saved); config.closeModal('mProduct');
+      var storageKey = draft.existing ? STORAGE + '.edit.' + draft.id : STORAGE;
+      draft = null; editing = false; job = null;
+      try { sessionStorage.removeItem(storageKey); } catch (_) {}
+      config.toast('제품을 저장하고 공개 데이터 반영을 확인했습니다.');
+    } catch (e) {
+      status(saveError(e) +
+        '\n입력은 유지됩니다. 연결을 확인한 뒤 같은 창에서 다시 저장해 주세요.', true, true);
+      config.saveFailed();
+    } finally { lock(false); }
+  }
+  function onProductOpened(id, product) {
+    editing = false; job = null;
+    if (panel) panel.hidden = true;
+    $('btnSaveProduct').textContent = '저장';
+    // Keep the option check on later edits of products created through this flow.
+    var line = product && /^옵션: (.+) · ([1-9]\d*)개(?:\n|$)/.exec(product.desc || '');
+    if (line && Core.parseCoupangIdentity(product.srcUrl) && product.links.some(function(l){return Core.validateAffiliateUrl(l.url);})) {
+      draft = Object.assign(blank(), {id:id, existing:true, createdAt:product.createdAt, size:line[1], quantity:line[2]});
+      $('f_desc').value = product.desc.slice(line[0].length);
+      var restored = false;
+      try {
+        var savedDraft = JSON.parse(sessionStorage.getItem(STORAGE + '.edit.' + id) || 'null');
+        if (savedDraft && savedDraft.id === id && savedDraft.editorData) {
+          draft = Object.assign(blank(), savedDraft, {id:id,existing:true,confirmed:false});
+          applyEditorData(draft.editorData); restored = true;
+        }
+      } catch (_) {}
+      activateEditor();
+      if(restored) status('보관한 수정 내용을 복원했습니다. 상품과 링크의 내용을 다시 확인해 주세요.',false,true);
+    }
+  }
+  function restoreEditor() {
+    if (!draft.editorData) { status('보관한 수정 내용이 없습니다.',true); return; }
+    var data = draft.editorData;
+    config.closeModal('mCoupangRegistration'); config.openProduct(null);
+    applyEditorData(data);
+    activateEditor();
+  }
+  function applyEditorData(data) {
+    ['brand','name','color','price','desc','src'].forEach(function(k) { $('f_' + k).value = data[k === 'src' ? 'srcUrl' : k] == null ? '' : data[k === 'src' ? 'srcUrl' : k]; });
+    $('f_tags').value = (data.tags || []).join(', '); $('f_male').checked = !!data.male;
+    $('f_maleWrap').classList.toggle('on',!!data.male);
+    config.setImage(data.image); config.setLinks(data.links);
+    $('f_cats').querySelectorAll('input').forEach(function(el){el.checked = (data.catIds || []).includes(el.value); el.closest('label').classList.toggle('on',el.checked);});
+  }
+  function onEditorChange(event) {
+    if (!editing || busy || panel.contains(event.target) && event.target.id === 'crEditConfirmed') return;
+    $('crEditConfirmed').checked = false;
+    status('내용이 바뀌었습니다. 상품과 제휴 링크의 내용을 다시 확인해 주세요.', false, true);
+    setEditorLinks();
+    snapshotEditor(editorValues());
+  }
+  function markup() {
+    return '<div class="modal cr-modal" role="dialog" aria-modal="true" aria-labelledby="crTitle">' +
+      '<header><h3 id="crTitle">쿠팡 상품 등록</h3><button class="close" data-close aria-label="닫기">×</button></header>' +
+      '<div class="body"><ol class="cr-steps"><li aria-current="step">1. 제품 검색</li><li>2. 상품·링크 확인</li><li>3. 수정 후 저장</li></ol>' +
+      '<section class="cr-section"><h4>어떤 제품을 등록할까요?</h4><div class="cr-search"><input id="cr_query" aria-label="검색할 제품명" placeholder="예) 니베아 컬러 립밤 딥 레드"><button class="btn primary" id="crSearch">파트너스에서 검색</button></div>' +
+      '<p class="cr-note">검색 결과에서 색상·용량·수량을 확인하고 본인 계정의 링크를 만들어 주세요.</p></section>' +
+      '<section class="cr-section"><h4>선택한 상품</h4><div class="cr-grid">' +
+      field('sourceUrl','쿠팡 상품 주소','https://www.coupang.com/vp/products/…?itemId=…',true) +
+      field('brand','브랜드','예) 니베아') + field('name','제품명','예) 케어 앤 컬러 립밤') +
+      field('color','색상·호수','예) 딥 레드') + field('size','용량·규격','예) 4.8g') +
+      field('quantity','수량','예) 1',false,'number') + field('price','상품 가격 (선택)','배송비 제외',false,'number') +
+      field('image','이미지 주소 (선택)','https://…',true) +
+      field('affiliateUrl','본인 쿠팡 파트너스 링크','https://link.coupang.com/a/…',true) + '</div>' +
+      '<div class="cr-actions"><a class="btn sm" id="crSource" target="_blank" rel="noopener noreferrer" hidden>선택 상품 열기</a>' +
+      '<a class="btn sm" id="crPartners" target="_blank" rel="noopener noreferrer">파트너스에서 링크 만들기</a></div></section>' +
+      '<label class="cr-check"><input type="checkbox" id="cr_confirmed"><span>브랜드·제품·색상·용량·수량이 모두 일치하며, 본인 파트너스 계정에서 만든 링크임을 확인했습니다.</span></label>' +
+      '<p id="crStatus" class="cr-status" role="status" aria-live="polite"></p></div>' +
+      '<footer><button class="btn" id="crNewDraft">초안 비우기</button><button class="btn" data-close>취소</button><button class="btn primary" id="crContinue">내용 수정으로 이동</button></footer></div>';
+  }
+  function field(key,label,placeholder,wide,type) {
+    return '<div class="field'+(wide?' cr-wide':'')+'"><label for="cr_'+key+'">'+label+'</label><input id="cr_'+key+'" type="'+(type||'text')+'"'+(type==='number'?' min="0" step="1"':'')+' placeholder="'+placeholder+'" autocomplete="off"></div>';
+  }
+  function init(options) {
+    config = options;
+    if (!Core) return;
+    modal = document.createElement('div'); modal.id = 'mCoupangRegistration'; modal.className = 'overlay'; modal.innerHTML = markup(); document.body.appendChild(modal);
+    panel = document.createElement('fieldset'); panel.id='crEditor'; panel.className='cr-editor'; panel.hidden=true;
+    panel.innerHTML='<legend>쿠팡 상품 확인</legend><div class="cr-grid"><div class="field"><label for="crEditSize">용량·규격</label><input id="crEditSize"></div><div class="field"><label for="crEditQuantity">수량</label><input id="crEditQuantity" type="number" min="1" step="1"></div></div>' +
+      '<div class="cr-actions"><a class="btn sm" id="crEditorSource" target="_blank" rel="noopener noreferrer">원본 상품 열기</a><a class="btn sm" id="crEditorLink" target="_blank" rel="noopener noreferrer">제휴 링크 열기</a></div>' +
+      '<label class="cr-check"><input id="crEditConfirmed" type="checkbox"><span>수정한 내용과 제휴 링크 목적지의 브랜드·제품·색상·용량·수량이 모두 일치합니다.</span></label><p id="crEditorStatus" class="cr-status" role="status" aria-live="polite"></p>';
+    $('mProduct').querySelector('.body').prepend(panel);
+    $('btnCoupangRegistration').addEventListener('click',open);
+    modal.addEventListener('input',function(event) { if(event.target.id!=='cr_confirmed') $('cr_confirmed').checked=false; readWizard(); remember(); updateLinks(); });
+    $('crSearch').addEventListener('click',function(){readWizard(); if(!draft.query){status('검색할 제품명을 입력해 주세요.',true);$('cr_query').focus();return;} remember(); root.open(searchUrl(),'_blank','noopener,noreferrer');});
+    $('cr_query').addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();$('crSearch').click();}});
+    $('crContinue').addEventListener('click',function(){ if(draft && draft.editorData) {readWizard(); var check=Core.validateDraft(draft); if(!check.valid){status(check.errors.join('\n'),true);return;} delete draft.editorData; } transfer(); });
+    $('crNewDraft').addEventListener('click',function(){ if(!root.confirm('보관 중인 초안을 비울까요?'))return; draft=blank(); job=null; remember(); showWizard(); });
+    // Resume the exact attempted ID rather than generating a second product after a reload.
+    var resume=document.createElement('button'); resume.className='btn'; resume.textContent='보관한 수정 내용 이어서'; resume.id='crResume';
+    modal.querySelector('footer').prepend(resume);
+    resume.addEventListener('click',restoreEditor);
+    modal.addEventListener('mousedown',function(e){if(e.target===modal)config.closeModal(modal.id);});
+    modal.addEventListener('keydown',function(e){
+      if(e.key!=='Tab')return;
+      var list=Array.from(modal.querySelectorAll('input,button,a[href]')).filter(function(el){return !el.hidden && !el.disabled && el.getClientRects().length;});
+      if(e.shiftKey&&document.activeElement===list[0]){e.preventDefault();list[list.length-1].focus();}
+      else if(!e.shiftKey&&document.activeElement===list[list.length-1]){e.preventDefault();list[0].focus();}
+    });
+    $('mProduct').addEventListener('input',onEditorChange); $('mProduct').addEventListener('change',onEditorChange);
+    $('crEditConfirmed').addEventListener('change',function(){confirmedFingerprint=this.checked?editorFingerprint():'';});
+    root.addEventListener('beforeunload',function(e){if(busy){e.preventDefault();e.returnValue='';}});
+    document.addEventListener('click',function(e){
+      if(busy && !$('mProduct').contains(e.target)) {e.preventDefault();e.stopImmediatePropagation();}
+    },true);
+    document.addEventListener('keydown',function(e){if(busy && e.key==='Tab')e.preventDefault();},true);
+    new MutationObserver(function(){if(!modal.classList.contains('on')&&returnFocus){returnFocus.focus();returnFocus=null;}}).observe(modal,{attributes:true,attributeFilter:['class']});
+  }
+  // Include modules in the host's single-file export so its existing deployment tool keeps working.
+  async function prepareExport(clone) {
+    ['#mCoupangRegistration','#crEditor'].forEach(function(sel){var el=clone.querySelector(sel);if(el)el.remove();});
+    var elements=Array.from(clone.querySelectorAll('[data-coupang-asset]'));
+    await Promise.all(elements.map(async function(el){
+      var url=el.getAttribute('src')||el.getAttribute('href');
+      var response=await fetch(url,{cache:'no-store'}); if(!response.ok)throw new Error('등록 기능 파일을 읽지 못했습니다.');
+      var content=await response.text();
+      var replacement=clone.ownerDocument.createElement(el.tagName==='LINK'?'style':'script');
+      replacement.textContent=el.tagName==='LINK'?content:content.replace(/<\/script/gi,'<\\/script');
+      el.replaceWith(replacement);
+    }));
+  }
+  root.CoupangRegistrationUI={init:init,isEditing:function(){return editing;},isSaving:function(){return busy;},saveFromEditor:saveFromEditor,onProductOpened:onProductOpened,prepareExport:prepareExport};
+})(window);
+</script>
+<script>(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.AuthRecoveryCore = factory();
+}(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+  'use strict';
+  var invalidLink = '비밀번호 재설정 링크가 올바르지 않습니다. 복구 메일을 다시 요청해 주세요.';
+  var expiredLink = '비밀번호 재설정 링크가 만료되었거나 유효하지 않습니다. 복구 메일을 다시 요청해 주세요.';
+  var securityKeys = ['access_token', 'refresh_token', 'type', 'token_type', 'expires_at', 'expires_in', 'error', 'error_code', 'error_description', 'code', 'token_hash', 'provider_token', 'provider_refresh_token'];
+
+  function jwtClaims(value) {
+    if (typeof value !== 'string' || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value)) return null;
+    try {
+      var parts = value.split('.');
+      function decode(part) { return JSON.parse(atob(part.replace(/-/g, '+').replace(/_/g, '/'))); }
+      var header = decode(parts[0]);
+      var claims = decode(parts[1]);
+      if (!header || typeof header !== 'object' || Array.isArray(header) || !header.alg || header.alg === 'none') return null;
+      return claims && typeof claims === 'object' && !Array.isArray(claims) ? claims : null;
+    } catch (_) { return null; }
+  }
+
+  function tokenClaims(value) {
+    var claims = jwtClaims(value);
+    if (!claims || (claims.role && claims.role !== 'authenticated')) return null;
+    return claims;
+  }
+
+  function isAuthParameters(params) {
+    return securityKeys.some(function (key) {
+      if (key !== 'type') return params.has(key);
+      return params.getAll(key).some(function (type) {
+        return ['recovery', 'signup', 'invite', 'magiclink', 'email', 'email_change', 'sms'].indexOf(type) !== -1;
+      });
+    });
+  }
+
+  function parseRecoveryLocation(location) {
+    var input = location && typeof location === 'object' ? location : {};
+    var hash = typeof input.hash === 'string' ? input.hash.replace(/^#/, '') : '';
+    var search = typeof input.search === 'string' ? input.search.replace(/^\?/, '') : '';
+    var fragment = new URLSearchParams(hash);
+    var query = new URLSearchParams(search);
+    var routeQuery = hash.charAt(0) === '/' && hash.indexOf('?') !== -1 ? new URLSearchParams(hash.slice(hash.indexOf('?') + 1)) : new URLSearchParams();
+    var tokenishRoute = isAuthParameters(routeQuery);
+    if (!isAuthParameters(fragment) && !isAuthParameters(query) && !tokenishRoute) return null;
+    function failure(message) { return { kind: 'error', message: message || invalidLink }; }
+    if (/%(?![\da-f]{2})/i.test(hash + search)) return failure();
+    var combined = new URLSearchParams(search + '&' + hash);
+    for (var i = 0; i < securityKeys.length; i++) {
+      var values = combined.getAll(securityKeys[i]);
+      if (values.some(function (value) { return value.indexOf('\ufffd') !== -1 || value !== values[0]; })) return failure();
+    }
+    if (combined.has('error') || combined.has('error_code') || combined.has('error_description')) return failure(expiredLink);
+    // Query tokens have already reached the server; consume them safely, never use them.
+    if (isAuthParameters(query) || tokenishRoute || fragment.get('type') !== 'recovery') return failure();
+    var accessToken = fragment.get('access_token');
+    var claims = tokenClaims(accessToken);
+    if (!claims || (fragment.has('token_type') && fragment.get('token_type').toLowerCase() !== 'bearer')) return failure();
+    var now = input.nowSeconds === undefined ? Math.floor(Date.now() / 1000) : input.nowSeconds;
+    if (typeof now !== 'number' || !Number.isFinite(now)) return failure();
+    if (claims.exp !== undefined && (!Number.isSafeInteger(claims.exp) || claims.exp <= now)) return failure(expiredLink);
+    for (var j = 0; j < 2; j++) {
+      var key = ['expires_at', 'expires_in'][j];
+      if (!fragment.has(key)) continue;
+      var raw = fragment.get(key);
+      var expiration = Number(raw);
+      if (!/^\d+$/.test(raw) || !Number.isSafeInteger(expiration) || expiration <= 0) return failure(expiredLink);
+      if (key === 'expires_at' && expiration <= now) return failure(expiredLink);
+    }
+    return { kind: 'recovery', accessToken: accessToken };
+  }
+
+  function validateNewPassword(password, confirmation) {
+    var errors = [];
+    if (typeof password !== 'string' || Array.from(password).length < 8) errors.push('새 비밀번호는 8자 이상으로 입력해 주세요.');
+    if (typeof confirmation !== 'string' || password !== confirmation) errors.push('새 비밀번호와 확인 입력이 일치하지 않습니다.');
+    return errors;
+  }
+
+  function safeError(message, code) {
+    var error = new Error(message);
+    error.code = code || 'recovery_error';
+    return error;
+  }
+
+  function configurationError() {
+    return safeError('비밀번호 재설정 연결 설정을 확인해 주세요.', 'configuration');
+  }
+
+  function plainUrl(value) {
+    if (typeof value !== 'string' || !value || /[\u0000-\u0020\u007f\\?#]/.test(value)) return null;
+    try {
+      var url = new URL(value);
+      if (url.username || url.password || value.split('/')[2].indexOf('@') !== -1) return null;
+      return url;
+    } catch (_) { return null; }
+  }
+
+  function createRecoveryClient(options) {
+    var config = options || {};
+    var base = plainUrl(config.baseUrl);
+    var loopback = !!(config.allowLoopback === true && base && /^http:\/\/127\.0\.0\.1:[1-9]\d*\/mock\/?$/.test(config.baseUrl));
+    var hosted = !!(base && /^https:\/\/[a-z\d][a-z\d-]*\.supabase\.co\/?$/i.test(config.baseUrl));
+    if (!loopback && !hosted) throw configurationError();
+    var redirect = plainUrl(config.redirectTo);
+    if (!redirect) throw configurationError();
+    if (loopback) {
+      if (redirect.origin !== base.origin || ['/', '/index.html'].indexOf(redirect.pathname) === -1) throw configurationError();
+    } else if (redirect.protocol !== 'https:' || redirect.port) throw configurationError();
+    var publishableKey = config.publishableKey;
+    var legacy = jwtClaims(publishableKey);
+    if (!(typeof publishableKey === 'string' && /^sb_publishable_[A-Za-z\d_-]+$/.test(publishableKey)) &&
+        !(legacy && legacy.role === 'anon') && !(loopback && publishableKey === 'fixture-public-key')) throw configurationError();
+    var fetchImpl = config.fetchImpl || (typeof fetch === 'function' ? fetch : null);
+    if (typeof fetchImpl !== 'function' || typeof AbortController !== 'function') throw configurationError();
+    var baseUrl = base.href.replace(/\/$/, '');
+    var fixedRedirect = redirect.href;
+
+    function apiError(action, status, body) {
+      var code = body && (body.code || body.error_code);
+      if (status === 429 || code === 'over_email_send_rate_limit' || code === 'over_request_rate_limit') {
+        return safeError('요청이 많습니다. 잠시 후 다시 시도해 주세요.', 'rate_limit');
+      }
+      if (action === 'update' && ['weak_password', 'same_password', 'password_too_short', 'password_policy_violation'].indexOf(code) !== -1) {
+        return safeError('새 비밀번호가 서버의 보안 기준에 맞지 않거나 이전 비밀번호와 같습니다. 다른 비밀번호를 입력해 주세요.', 'password_policy');
+      }
+      if (code === 'reauthentication_needed' || code === 'reauthentication_not_valid') {
+        return safeError('추가 본인 확인이 필요합니다. 복구 메일을 다시 요청한 뒤에도 계속되면 관리자에게 문의해 주세요.', 'reauthentication');
+      }
+      if (action !== 'recover' && (status === 401 || status === 403 || ['bad_jwt', 'otp_expired', 'session_not_found', 'refresh_token_not_found'].indexOf(code) !== -1)) {
+        return safeError(expiredLink, 'invalid_recovery');
+      }
+      return safeError(action === 'recover' ? '복구 메일을 요청하지 못했습니다. 잠시 후 다시 시도해 주세요.' : '비밀번호 재설정 요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.', 'request_failed');
+    }
+
+    async function request(route, method, body, accessToken, action) {
+      var controller = new AbortController();
+      var timedOut = false;
+      var timer = setTimeout(function () { timedOut = true; controller.abort(); }, 20000);
+      var headers = { apikey: publishableKey, 'Content-Type': 'application/json' };
+      if (accessToken) headers.Authorization = 'Bearer ' + accessToken;
+      var init = { method: method, headers: headers, credentials: 'omit', referrerPolicy: 'no-referrer', cache: 'no-store', redirect: 'error', signal: controller.signal };
+      if (body !== undefined) init.body = JSON.stringify(body);
+      try {
+        var result;
+        try { result = await fetchImpl(baseUrl + route, init); }
+        catch (_) { throw safeError(timedOut ? '요청 시간이 초과되었습니다. 잠시 후 다시 시도해 주세요.' : '서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.', timedOut ? 'timeout' : 'network'); }
+        var validStatus = result && result.ok === true && result.status >= 200 && result.status < 300;
+        var data = null;
+        try { data = await result.json(); }
+        catch (_) {
+          if (validStatus && result.status !== 204) throw safeError('서버 응답을 확인하지 못했습니다. 다시 시도해 주세요.', 'invalid_response');
+        }
+        if (!validStatus || (data && (data.error || data.error_code))) throw apiError(action, result && result.status, data);
+        if (action === 'recover') return { requested: true };
+        if (!data || typeof data.id !== 'string' || !data.id.trim()) throw safeError('본인 확인 결과를 확인하지 못했습니다. 복구 메일을 다시 요청해 주세요.', 'invalid_response');
+        return data;
+      } finally { clearTimeout(timer); }
+    }
+
+    return {
+      requestRecovery: async function (email, redirectTo) {
+        var address = typeof email === 'string' ? email.trim() : '';
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) throw safeError('이메일 주소 형식을 확인해 주세요.', 'invalid_email');
+        var requestedRedirect = plainUrl(redirectTo);
+        if (!requestedRedirect || requestedRedirect.href !== fixedRedirect) throw configurationError();
+        return request('/auth/v1/recover?redirect_to=' + encodeURIComponent(fixedRedirect), 'POST', { email: address }, undefined, 'recover');
+      },
+      verifyRecovery: async function (accessToken) {
+        if (!tokenClaims(accessToken)) throw safeError(invalidLink, 'invalid_recovery');
+        return request('/auth/v1/user', 'GET', undefined, accessToken, 'verify');
+      },
+      updatePassword: async function (accessToken, password) {
+        if (!tokenClaims(accessToken)) throw safeError(invalidLink, 'invalid_recovery');
+        var errors = validateNewPassword(password, password);
+        if (errors.length) throw safeError(errors[0], 'invalid_password');
+        return request('/auth/v1/user', 'PUT', { password: password }, accessToken, 'update');
+      }
+    };
+  }
+  return { parseRecoveryLocation: parseRecoveryLocation, validateNewPassword: validateNewPassword, createRecoveryClient: createRecoveryClient };
+}));
+</script>
+<script>(function(root){
+  "use strict";
+  var core=root.AuthRecoveryCore, incoming=null;
+  if(core){
+    var source=typeof root.consumeHubRecoveryLocation==="function" ? root.consumeHubRecoveryLocation() : {hash:root.location.hash,search:root.location.search};
+    incoming=core.parseRecoveryLocation(source);
+    if(incoming){
+      try{root.history.replaceState(null,"",root.location.pathname);}catch(e){}
+    }
+  }
+  var cfg, client, overlay, busy=false, token=null, verified=null, lastFocus=null;
+  function el(id){return document.getElementById(id);}
+  function state(message,error){
+    var out=el("authRecoveryState");
+    if(out){out.textContent=message||"";out.classList.toggle("auth-error",!!error);out.setAttribute("role",error?"alert":"status");}
+  }
+  function setBusy(value){
+    busy=value;
+    overlay.querySelectorAll("button,input").forEach(function(node){node.disabled=value;});
+    overlay.setAttribute("aria-busy",value?"true":"false");
+    if(value){var status=el("authRecoveryState");if(status){status.tabIndex=-1;status.focus();}}
+  }
+  function layout(title,body,footer){
+    el("authRecoveryTitle").textContent=title;
+    el("authRecoveryBody").innerHTML=body+'<p id="authRecoveryState" class="qstate" aria-live="polite"></p>';
+    el("authRecoveryFooter").innerHTML=footer;
+    setBusy(false);
+  }
+  function show(){
+    lastFocus=document.activeElement;
+    var login=el("mPin");if(login)login.classList.remove("on");
+    overlay.classList.add("on");
+    document.body.style.overflow="hidden";
+    var focus=overlay.querySelector("input,button");if(focus)focus.focus();
+  }
+  function close(){
+    if(busy)return;
+    token=null;verified=null;
+    overlay.classList.remove("on");
+    document.body.style.overflow="";
+    el("authRecoveryBody").textContent="";
+    el("authRecoveryFooter").textContent="";
+    if(lastFocus&&document.contains(lastFocus))lastFocus.focus();
+  }
+  function openRequest(){
+    if(busy)return;
+    token=null;verified=null;
+    layout("비밀번호 찾기",'<p>관리자 계정에 사용한 이메일을 입력해 주세요. 본인 이메일의 복구 링크에서 새 비밀번호를 정할 수 있습니다.</p><form id="authRecoveryRequest"><div class="field"><label for="authRecoveryEmail">관리자 이메일</label><input id="authRecoveryEmail" type="email" autocomplete="email" required></div></form>',
+      '<button type="button" class="btn" data-auth-action="login">로그인으로 돌아가기</button><button type="submit" form="authRecoveryRequest" class="btn primary">복구 메일 받기</button>');
+    var loginEmail=el("loginEmail");if(loginEmail)el("authRecoveryEmail").value=loginEmail.value;
+    show();el("authRecoveryEmail").focus();
+  }
+  function openLogin(){close();if(cfg.openLogin)cfg.openLogin();}
+  function recoveryError(message){
+    token=null;verified=null;
+    layout("복구 링크를 확인할 수 없습니다",'<p>링크가 만료됐거나 사용할 수 없습니다. 복구 메일을 다시 받아 가장 최근 링크를 열어 주세요.</p>',
+      '<button type="button" class="btn" data-auth-action="login">로그인으로 돌아가기</button><button type="button" class="btn primary" data-auth-action="request">복구 메일 다시 받기</button>');
+    state(message,true);show();
+  }
+  function passwordForm(){
+    layout("새 비밀번호 설정",'<p>본인 확인이 끝났습니다. 새 비밀번호는 이 화면에서 직접 입력해 주세요.</p><form id="authRecoveryPassword"><div class="field"><label for="authRecoveryNew">새 비밀번호</label><input id="authRecoveryNew" type="password" autocomplete="new-password" minlength="8" required><span class="hint">8자 이상으로 정해 주세요. 계정의 추가 보안 기준이 적용될 수 있습니다.</span></div><div class="field"><label for="authRecoveryConfirm">새 비밀번호 확인</label><input id="authRecoveryConfirm" type="password" autocomplete="new-password" minlength="8" required></div></form>',
+      '<button type="button" class="btn" data-auth-action="login">취소</button><button type="submit" form="authRecoveryPassword" class="btn primary">새 비밀번호로 변경</button>');
+    show();el("authRecoveryNew").focus();
+  }
+  async function beginRecovery(result){
+    if(result.kind!=="recovery"){recoveryError(result.message);return;}
+    token=result.accessToken;
+    layout("복구 링크 확인 중",'<p>기존 계정의 복구 링크를 확인하고 있습니다.</p>',"");
+    show();setBusy(true);
+    try{
+      verified=await client.verifyRecovery(token);
+      if(!verified||!verified.id)throw new Error("복구 계정을 확인하지 못했습니다. 메일을 다시 받아 주세요.");
+      passwordForm();
+    }catch(e){recoveryError(e.message);}
+  }
+  async function submitRequest(){
+    if(busy)return;
+    var email=el("authRecoveryEmail").value.trim();
+    setBusy(true);state("복구 메일을 요청하고 있습니다.");
+    try{
+      await client.requestRecovery(email,cfg.redirectTo);
+      layout("복구 메일을 확인해 주세요",'<p>입력한 이메일과 연결된 계정이 있다면 복구 메일이 발송됩니다. 받은편지함과 스팸함을 확인한 뒤, 가장 최근 메일의 링크를 열어 주세요.</p>',
+        '<button type="button" class="btn" data-auth-action="request">이메일 다시 입력</button><button type="button" class="btn primary" data-auth-action="login">로그인으로 돌아가기</button>');
+      state("복구 링크와 비밀번호는 대화에 보내지 마세요.");
+      show();
+    }catch(e){setBusy(false);state(e.message,true);}
+  }
+  async function submitPassword(){
+    if(busy)return;
+    if(!token||!verified){recoveryError("복구 링크를 다시 열어 주세요.");return;}
+    var password=el("authRecoveryNew").value, confirmation=el("authRecoveryConfirm").value;
+    var errors=core.validateNewPassword(password,confirmation);
+    if(errors.length){state(errors.join(" "),true);return;}
+    setBusy(true);state("비밀번호를 변경하고 있습니다.");
+    el("authRecoveryNew").value="";el("authRecoveryConfirm").value="";
+    try{
+      var user=await client.updatePassword(token,password);
+      password="";confirmation="";
+      if(!user||user.id!==verified.id)throw new Error("변경 결과를 확인하지 못했습니다. 로그인으로 계정 상태를 확인해 주세요.");
+      token=null;verified=null;
+      if(cfg.onPasswordChanged)cfg.onPasswordChanged();
+      layout("비밀번호를 변경했습니다",'<p>새 비밀번호로 관리자 로그인해 주세요.</p>',
+        '<button type="button" class="btn primary" data-auth-action="login">관리자 로그인</button>');
+      show();
+    }catch(e){password="";confirmation="";setBusy(false);state(e.message,true);el("authRecoveryNew").focus();}
+  }
+  function init(options){
+    if(overlay)return;
+    cfg=options;
+    client=core.createRecoveryClient({baseUrl:cfg.baseUrl,publishableKey:cfg.publishableKey,redirectTo:cfg.redirectTo,allowLoopback:cfg.allowLoopback,fetchImpl:root.fetch.bind(root)});
+    var style=document.createElement("style");style.id="authRecoveryStyles";
+    style.textContent='#authRecoveryModal{z-index:10020}#authRecoveryModal .modal{width:min(440px,calc(100vw - 32px));max-height:calc(100dvh - 40px);overflow:auto}#authRecoveryModal p{line-height:1.65;margin:0 0 16px;overflow-wrap:anywhere}#authRecoveryModal label{display:block;margin-bottom:7px}#authRecoveryModal input{width:100%;min-width:0;box-sizing:border-box}#authRecoveryModal footer{display:flex;flex-wrap:wrap;gap:8px}#authRecoveryModal .auth-error{color:#b42318}#authRecoveryModal .qstate:empty{display:none}#btnForgotPassword{margin-top:12px}';
+    document.head.appendChild(style);
+    overlay=document.createElement("div");overlay.id="authRecoveryModal";overlay.className="overlay";
+    overlay.setAttribute("role","dialog");overlay.setAttribute("aria-modal","true");overlay.setAttribute("aria-labelledby","authRecoveryTitle");
+    overlay.innerHTML='<div class="modal"><header><h3 id="authRecoveryTitle"></h3></header><div class="body" id="authRecoveryBody"></div><footer id="authRecoveryFooter"></footer></div>';
+    document.body.appendChild(overlay);
+    overlay.addEventListener("click",function(event){event.stopPropagation();var button=event.target.closest("[data-auth-action]");if(!button||busy)return;if(button.dataset.authAction==="request")openRequest();else openLogin();});
+    overlay.addEventListener("submit",function(event){event.preventDefault();if(event.target.id==="authRecoveryRequest")submitRequest();else if(event.target.id==="authRecoveryPassword")submitPassword();});
+    overlay.addEventListener("keydown",function(event){
+      if(event.key==="Escape"){event.preventDefault();event.stopPropagation();if(!busy)openLogin();}
+      if(event.key!=="Tab")return;
+      var fields=Array.from(overlay.querySelectorAll("input:not(:disabled),button:not(:disabled)"));
+      if(!fields.length){event.preventDefault();return;}
+      var first=fields[0],last=fields[fields.length-1];
+      if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}
+      else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}
+    });
+    document.addEventListener("keydown",function(event){
+      if(!overlay.classList.contains("on"))return;
+      if(busy&&(event.key==="Escape"||event.key==="Tab")){
+        event.preventDefault();event.stopImmediatePropagation();return;
+      }
+      if(event.key==="Tab"&&!overlay.contains(document.activeElement)){
+        event.preventDefault();event.stopImmediatePropagation();var first=overlay.querySelector("input:not(:disabled),button:not(:disabled)");if(first)first.focus();
+      }
+    },true);
+    root.addEventListener("beforeunload",function(event){if(busy){event.preventDefault();event.returnValue="";}});
+    el("btnForgotPassword").addEventListener("click",openRequest);
+    if(incoming){var result=incoming;incoming=null;beginRecovery(result);}
+  }
+  async function prepareExport(clone){
+    if(busy||token)throw new Error("복구가 끝난 뒤 내려받아 주세요.");
+    ["#authRecoveryModal","#authRecoveryStyles"].forEach(function(selector){var node=clone.querySelector(selector);if(node)node.remove();});
+    var scripts=Array.from(clone.querySelectorAll("script[data-auth-recovery-asset][src]"));
+    for(var i=0;i<scripts.length;i++){
+      var response=await root.fetch(scripts[i].getAttribute("src"),{cache:"no-store"});
+      if(!response.ok)throw new Error("복구 기능 파일을 읽지 못했습니다.");
+      scripts[i].textContent=(await response.text()).replace(/<\/script/gi,"<\\/script");scripts[i].removeAttribute("src");
+    }
+  }
+  root.AuthRecoveryUI={init:init,isBusy:function(){return busy||!!token;},prepareExport:prepareExport};
+})(window);
+</script>
 <script>
 (function(){
 "use strict";
@@ -965,9 +1859,9 @@ function ensureToken(){
   return Promise.resolve(true);
 }
 
-function cloudFetchState(){
+function cloudFetchState(signal){
   return fetch(CLOUD.url + "/rest/v1/hub_state?id=eq.1&select=data,updated_at,rev", {
-    headers: cloudHeaders(false), cache: "no-store"
+    headers: cloudHeaders(false), cache: "no-store", signal: signal
   }).then(function(r){
     if(!r.ok) throw new Error("불러오기 실패 (" + r.status + ")");
     return r.json();
@@ -990,10 +1884,10 @@ function cloudSaveState(){
 // ---- 부분 저장 (동시 편집 안전) ----------------------------------------
 // 전체 상태를 덮어쓰면 다른 PC가 방금 넣은 내용이 지워진다.
 // 그래서 바뀐 조각만 보내고 DB가 한 문장 안에서 병합하게 한다.
-function cloudRpc(fn, args){
+function cloudRpc(fn, args, signal){
   return ensureToken().then(function(){
     return fetch(CLOUD.url + "/rest/v1/rpc/" + fn, {
-      method:"POST", headers: cloudHeaders(true), body: JSON.stringify(args||{})
+      method:"POST", headers: cloudHeaders(true), body: JSON.stringify(args||{}), signal: signal
     });
   }).then(function(r){
     if(!r.ok) return r.text().then(function(t){ throw new Error("저장 실패 ("+r.status+") "+t.slice(0,140)); });
@@ -1703,8 +2597,22 @@ function catNamesOf(p){
   return catsOf(p).map(function(c){ return c.name; }).join(" ");
 }
 function openModal(id){ $(id).classList.add("on"); document.body.style.overflow="hidden"; }
-function closeModal(id){ $(id).classList.remove("on"); document.body.style.overflow=""; }
+function closeModal(id){
+  if(window.AuthRecoveryUI && window.AuthRecoveryUI.isBusy()){
+    toast("비밀번호 복구 확인이 끝날 때까지 창을 유지해 주세요."); return;
+  }
+  if(id==="mProduct" && window.CoupangRegistrationUI && window.CoupangRegistrationUI.isSaving()){
+    toast("저장 확인이 끝날 때까지 창을 유지해 주세요."); return;
+  }
+  $(id).classList.remove("on"); document.body.style.overflow="";
+}
 function closeAllModals(){
+  if(window.AuthRecoveryUI && window.AuthRecoveryUI.isBusy()){
+    toast("비밀번호 복구 확인이 끝날 때까지 창을 유지해 주세요."); return;
+  }
+  if(window.CoupangRegistrationUI && window.CoupangRegistrationUI.isSaving()){
+    toast("저장 확인이 끝날 때까지 창을 유지해 주세요."); return;
+  }
   var l=document.querySelectorAll(".overlay.on");
   for(var i=0;i<l.length;i++) l[i].classList.remove("on");
   document.body.style.overflow="";
@@ -2420,6 +3328,9 @@ function linkRowHtml(l){
   '</div>';
 }
 function openProduct(id){
+  if(window.CoupangRegistrationUI && window.CoupangRegistrationUI.isSaving()){
+    toast("저장 확인이 끝난 뒤 다른 제품을 열어 주세요."); return;
+  }
   editingId = id;
   var p = null;
   if(id){ for(var i=0;i<state.products.length;i++) if(state.products[i].id===id) p=state.products[i]; }
@@ -2461,6 +3372,8 @@ function openProduct(id){
 
   var links = (p && p.links.length) ? p.links : [{id:uid(),preset:"",label:"",price:null,url:"",clicks:0}];
   $("linkList").innerHTML = links.map(linkRowHtml).join("");
+
+  if(window.CoupangRegistrationUI) window.CoupangRegistrationUI.onProductOpened(id, p);
 
   openModal("mProduct");
   setTimeout(function(){ $("f_name").focus(); },50);
@@ -2900,6 +3813,11 @@ $("btnSaveProduct").addEventListener("click", function(){
     srcUrl:safeUrl($("f_src").value.trim())
   };
 
+  if(window.CoupangRegistrationUI && window.CoupangRegistrationUI.isEditing()){
+    window.CoupangRegistrationUI.saveFromEditor(data);
+    return;
+  }
+
   var saved = null;
   if(editingId){
     for(var i=0;i<state.products.length;i++){
@@ -3240,7 +4158,13 @@ function exportJson(){
 }
 /* 지금 화면에 담긴 내용을 그대로 심은 배포용 HTML을 만든다.
    수강생은 각자 브라우저에 저장된 값이 없으므로, 파일에 심어야 같은 내용을 본다. */
-function exportSite(){
+async function exportSite(){
+  if(window.AuthRecoveryUI && window.AuthRecoveryUI.isBusy()){
+    toast("비밀번호 복구가 끝난 뒤 배포용 파일을 내려받아 주세요."); return;
+  }
+  if(window.CoupangRegistrationUI && window.CoupangRegistrationUI.isSaving()){
+    toast("저장 확인이 끝난 뒤 배포용 파일을 내려받아 주세요."); return;
+  }
   var clone = document.documentElement.cloneNode(true);
 
   // 화면에 그려둔 부분은 비운다 (열 때 다시 그려진다)
@@ -3295,6 +4219,16 @@ function exportSite(){
     break;
   }
   if(!done){ toast("배포용 파일을 만들지 못했습니다."); return; }
+
+  if(window.CoupangRegistrationUI){
+    try { await window.CoupangRegistrationUI.prepareExport(clone); }
+    catch(e){ toast("등록 기능 파일을 포함하지 못했습니다. 연결을 확인한 뒤 다시 내려받아 주세요."); return; }
+  }
+
+  if(window.AuthRecoveryUI){
+    try { await window.AuthRecoveryUI.prepareExport(clone); }
+    catch(e){ toast("복구 기능 파일을 포함하지 못했습니다. 연결을 확인한 뒤 다시 내려받아 주세요."); return; }
+  }
 
   var html = "<!DOCTYPE html>\n" + clone.outerHTML;
   var blob = new Blob([html], {type:"text/html;charset=utf-8"});
@@ -3383,6 +4317,74 @@ if(pendingNotice){
 }
 if(!canPersist){
   toast("이 환경에서는 저장이 유지되지 않습니다. 파일을 직접 열어 사용해 주세요.");
+}
+
+/* 복구 토큰은 일반 로그인 세션과 분리하고, 변경 후에는 직접 다시 로그인한다. */
+if(window.AuthRecoveryUI && window.AuthRecoveryCore){
+  try{
+    window.AuthRecoveryUI.init({
+      baseUrl:CLOUD.url, publishableKey:CLOUD.key,
+      allowLoopback:location.hostname==="127.0.0.1",
+      redirectTo:location.hostname==="127.0.0.1" ? location.origin+"/" : "https://attractioncompany.github.io/product-hub/",
+      openLogin:function(){openModal("mPin");$("pinInput").value="";$("loginEmail").focus();},
+      onPasswordChanged:function(){storeSession(null);isAdmin=false;renderAll();}
+    });
+  }catch(e){
+    $("btnForgotPassword").addEventListener("click",function(){toast("복구 기능을 준비하지 못했습니다. 새로고침 후 다시 시도해 주세요.");});
+  }
+}else{
+  if(typeof window.consumeHubRecoveryLocation==="function")window.consumeHubRecoveryLocation();
+  $("btnForgotPassword").addEventListener("click",function(){toast("복구 기능 파일을 읽지 못했습니다. 새로고침 후 다시 시도해 주세요.");});
+}
+
+/* 쿠팡 등록은 부분 저장 후 공개 읽기로 확인한다. 기존 일반 편집 큐와 분리한다. */
+function registrationRequest(work){
+  var controller = new AbortController();
+  var timer = setTimeout(function(){ controller.abort(); }, 20000);
+  return work(controller.signal).finally(function(){ clearTimeout(timer); });
+}
+if(window.CoupangRegistrationUI && window.CoupangRegistrationCore){
+  window.CoupangRegistrationUI.init({
+    uid:uid, toast:toast, openModal:openModal, closeModal:closeModal, openProduct:openProduct,
+    canEdit:function(){ return isAdmin && isLoggedIn(); },
+    getProducts:function(){ return state.products; },
+    setImage:function(image){ pendingImage=image||""; updateImgPrev(); },
+    getImage:function(){ return pendingImage; },
+    setAffiliate:function(url){
+      var ps=presetByUrl(url);
+      $("linkList").innerHTML=linkRowHtml({id:uid(),preset:ps?ps.key:"",label:"쿠팡",url:url,price:null,clicks:0});
+    },
+    setLinks:function(links){ $("linkList").innerHTML=links.map(linkRowHtml).join(""); },
+    findSaved:function(product){
+      return registrationRequest(function(signal){ return cloudFetchState(signal); }).then(function(row){
+        if(!row || !row.data || !Array.isArray(row.data.products)) throw new Error("공개 상품 데이터를 확인하지 못했습니다. 연결을 확인해 주세요.");
+        return row.data.products.find(function(p){ return p.id===product.id; }) || null;
+      });
+    },
+    saveProduct:function(product){
+      if(!isAdmin || !isLoggedIn()) return Promise.reject(new Error("관리자 로그인이 필요합니다."));
+      if(pendingOps.length || syncState==="saving") return Promise.reject(new Error("다른 변경 내용의 저장이 남아 있습니다. 저장 상태를 확인한 뒤 다시 시도해 주세요."));
+      setSync("saving");
+      return registrationRequest(function(signal){
+        return cloudFetchState(signal).then(function(row){
+          if(!row || !row.data || !Array.isArray(row.data.products)) throw new Error("서버 상품 목록을 확인하지 못했습니다.");
+          var duplicate=window.CoupangRegistrationCore.findDuplicates({sourceUrl:product.srcUrl,affiliateUrl:product.links.filter(function(l){return window.CoupangRegistrationCore.validateAffiliateUrl(l.url);})[0].url},row.data.products)
+            .some(function(p){return p.id!==product.id;});
+          if(duplicate) throw new Error("같은 쿠팡 상품이 이미 등록되어 있습니다. 기존 제품을 수정해 주세요.");
+          return cloudRpc("hub_save_product", {p:product}, signal);
+        });
+      });
+    },
+    applySaved:function(product){
+      var index=state.products.findIndex(function(p){return p.id===product.id;});
+      if(index===-1) state.products.push(product); else state.products[index]=product;
+      if(!saveLocalOnly()) toast("서버 저장은 확인했습니다. 이 기기의 임시 저장 공간을 확인해 주세요.");
+      renderAll(); setSync("saved",timeAgoLabel());
+    },
+    saveFailed:function(){ setSync("error","등록 내용을 유지했습니다"); }
+  });
+} else {
+  $("btnCoupangRegistration").addEventListener("click",function(){toast("쿠팡 등록 기능 파일을 읽지 못했습니다. 새로고침 후 다시 시도해 주세요.");});
 }
 })();
 </script>
