@@ -608,6 +608,7 @@
     <span class="tag">관리자</span>
     <button class="btn sm primary" data-act="newProduct">+ 제품 추가</button>
     <button class="btn sm" id="btnCoupangRegistration">쿠팡 상품 등록</button>
+    <button class="btn sm" data-act="hiddenProducts">숨긴 제품</button>
     <button class="btn sm" data-act="cats">카테고리</button>
     <button class="btn sm" data-act="settings">설정</button>
     <button class="btn sm" data-act="stats">통계</button>
@@ -2754,6 +2755,7 @@ function normalize(d){
       });
       out.products.push({
         id: p.id || uid(),
+        ...(p.hidden === true ? {hidden:true} : {}),
         catIds: ids,
         brand: typeof p.brand==="string" ? p.brand.trim() : "",
         color: _cl,
@@ -2813,9 +2815,11 @@ function bootCloud(){
       // DB가 비어 있으면 지금 화면의 내용이 곧 원본이 된다.
       // 관리자가 로그인하면 그때 올라간다.
       setSync("idle");
+      renderAll();
     }
   }).catch(function(e){
-    setSync("offline", "저장된 사본을 보고 있습니다");
+    setSync("offline", "상품 목록을 불러오지 못했습니다");
+    renderAll();
   });
 }
 
@@ -2949,6 +2953,7 @@ function parseHash(){
     else if(seg[0]==="uncat") r.view="uncat";
     else if(seg[0]==="men") r.view="men";
     else if(seg[0]==="search") r.view="search";
+    else if(seg[0]==="hidden") r.view="hidden";
     else if(seg[0]==="c" && seg[1]){ r.view="cat"; r.id=decodeURIComponent(seg[1]); }
   }
   var pi = seg.indexOf("p");
@@ -2968,16 +2973,20 @@ function hrefFor(view, id, page){
 function go(view, id, page){ location.hash = hrefFor(view, id, page).slice(1); }
 
 /* ===================== 집계 ===================== */
+function publishedProducts(){
+  if(cloudEnabled() && !cloudReady) return [];
+  return state.products.filter(function(p){ return p.hidden!==true; });
+}
 function countsByCat(){
   var c={};
-  state.products.forEach(function(p){
+  publishedProducts().forEach(function(p){
     p.catIds.forEach(function(id){ c[id]=(c[id]||0)+1; });
   });
   return c;
 }
 function uncatCount(){
   var n=0;
-  state.products.forEach(function(p){ if(!p.catIds.length) n++; });
+  publishedProducts().forEach(function(p){ if(!p.catIds.length) n++; });
   return n;
 }
 function catsInGroup(g){
@@ -2986,16 +2995,15 @@ function catsInGroup(g){
 
 /* ===================== 목록 계산 ===================== */
 function baseList(){
-  if(route.view==="cat"){
-    return state.products.filter(function(p){ return p.catIds.indexOf(route.id)!==-1; });
+  if(route.view==="hidden"){
+    if(!isAdmin || !isLoggedIn() || !cloudReady) return [];
+    return state.products.filter(function(p){ return p.hidden===true; });
   }
-  if(route.view==="uncat"){
-    return state.products.filter(function(p){ return p.catIds.length===0; });
-  }
-  if(route.view==="men"){
-    return state.products.filter(function(p){ return p.male; });
-  }
-  return state.products.slice(); // all / search
+  var products=publishedProducts();
+  if(route.view==="cat") return products.filter(function(p){ return p.catIds.indexOf(route.id)!==-1; });
+  if(route.view==="uncat") return products.filter(function(p){ return p.catIds.length===0; });
+  if(route.view==="men") return products.filter(function(p){ return p.male; });
+  return products;
 }
 function applySub(list){
   if(!subCats.length) return list;
@@ -3110,7 +3118,9 @@ function cardHtml(p, manualOrder){
   var pos = state.products.indexOf(p);
   var admin = isAdmin ? '<div class="cardadmin">'+
       '<button class="btn xs" data-edit="'+esc(p.id)+'">수정</button>'+
-      (manualOrder?'<button class="btn xs" data-move="'+esc(p.id)+'|-1"'+(pos<=0?' disabled':'')+'>↑</button>'+
+      '<button class="btn xs" data-visibility="'+esc(p.id)+'" data-hide="'+(p.hidden===true?"false":"true")+'">'+
+        (p.hidden===true?"다시 게시":"숨기기")+'</button>'+
+      (manualOrder && route.view!=="hidden"?'<button class="btn xs" data-move="'+esc(p.id)+'|-1"'+(pos<=0?' disabled':'')+'>↑</button>'+
       '<button class="btn xs" data-move="'+esc(p.id)+'|1"'+(pos>=state.products.length-1?' disabled':'')+'>↓</button>':'')+
       '<button class="btn xs" data-dup="'+esc(p.id)+'">복제</button>'+
       '<button class="btn xs danger" data-del="'+esc(p.id)+'">삭제</button>'+
@@ -3213,13 +3223,11 @@ function renderMenu(){
 var tileThumbCache = {};
 function tileThumb(catId){
   if(!catId) return "";
-  if(tileThumbCache.hasOwnProperty(catId)){
-    var cached = tileThumbCache[catId];
-    // 그사이 그 제품이 지워졌으면 다시 고른다
-    if(!cached || state.products.some(function(p){ return safeImg(p.image)===cached; })) return cached;
-  }
+  var products=publishedProducts();
+  var cached=tileThumbCache[catId];
+  if(cached && products.some(function(p){ return p.catIds.indexOf(catId)!==-1 && safeImg(p.image)===cached; })) return cached;
   var imgs=[];
-  state.products.forEach(function(p){
+  products.forEach(function(p){
     if(p.catIds.indexOf(catId)===-1) return;
     var u=safeImg(p.image);
     if(u) imgs.push(u);
@@ -3296,7 +3304,7 @@ function renderHome(){
     '</div>';
   }
 
-  if(!state.categories.length && !state.products.length){
+  if(!state.categories.length && !publishedProducts().length){
     h += '<div class="empty" style="margin-top:18px"><b>아직 등록된 내용이 없습니다</b>'+
       (isAdmin?'관리자 모드에서 카테고리와 제품을 추가해 주세요.':'곧 제품이 추가될 예정입니다.')+'</div>';
   }
@@ -3319,6 +3327,7 @@ function renderList(){
   } else if(route.view==="uncat") title="미분류";
   else if(route.view==="men") title="맨즈";
   else if(route.view==="search") title="검색 결과";
+  else if(route.view==="hidden") title="숨긴 제품";
   else title="전체 제품";
 
   var list = currentList();
@@ -3367,7 +3376,7 @@ function renderList(){
   var maleN = baseList().filter(function(p){ return p.male; }).length;
   h += '<div class="toolrow">'+
     (subCats.length ? '<button class="btn sm" data-sub="__all">필터 해제</button>' : '')+
-    (route.view==="men" ? '' :
+    (route.view==="men" || route.view==="hidden" ? '' :
       '<button class="cat'+(maleOnly?" on":"")+'" data-male>남성 추천'+(maleN?'<span class="n">'+maleN+'</span>':'')+'</button>')+
     '<span style="flex:1"></span>'+
     '<select class="sort" id="sort">'+
@@ -3377,8 +3386,9 @@ function renderList(){
     '</select></div>';
 
   if(!slice.length){
-    h += '<div class="empty"><b>'+(query.trim()||subCats.length||maleOnly?"조건에 맞는 제품이 없습니다":"등록된 제품이 없습니다")+'</b>'+
-      (isAdmin?'관리자 모드에서 “+ 제품 추가”를 눌러 등록하세요.':'곧 제품이 추가될 예정입니다.')+'</div>';
+    if(route.view==="hidden" && !query.trim()) h += '<div class="empty"><b>숨긴 제품이 없습니다</b></div>';
+    else h += '<div class="empty"><b>'+(query.trim()||subCats.length||maleOnly?"조건에 맞는 제품이 없습니다":"등록된 제품이 없습니다")+'</b>'+
+      (isAdmin && route.view!=="hidden"?'관리자 모드에서 “+ 제품 추가”를 눌러 등록하세요.':(route.view==="hidden"?'':'곧 제품이 추가될 예정입니다.'))+'</div>';
   } else {
     h += '<div class="grid">'+slice.map(function(p){ return cardHtml(p, sortBy==="manual"); }).join("")+'</div>';
     if(pages>1) h += '<div class="pgnote">'+total+'개 중 '+((page-1)*PER_PAGE+1)+'–'+Math.min(page*PER_PAGE,total)+'번째</div>';
@@ -3390,7 +3400,10 @@ function renderList(){
 /* ===================== 렌더 진입점 ===================== */
 function renderPage(){
   var h;
-  if(route.view==="home") h=renderHome();
+  if(cloudEnabled() && !cloudReady){
+    h='<div class="empty" role="status" style="margin-top:28px">'+
+      (syncState==="offline"?"상품 목록을 불러오지 못했습니다. 새로고침해 주세요.":"상품 목록을 불러오는 중입니다.")+'</div>';
+  } else if(route.view==="home" || (route.view==="hidden" && (!isAdmin || !isLoggedIn()))) h=renderHome();
   else h=renderList();
   $("page").innerHTML=h;
 }
@@ -3401,7 +3414,7 @@ $("q").addEventListener("input", function(){
   query = this.value;
   $("qClear").style.display = query ? "block" : "none";
   // 검색을 시작하면 결과를 볼 수 있는 목록 화면으로 옮겨준다
-  if(query.trim() && (route.view==="home" || route.view==="pc")){
+  if(query.trim() && (route.view==="home" || route.view==="pc" || (route.view==="hidden" && !isAdmin))){
     go("search"); return;
   }
   route.page = 1;
@@ -3457,6 +3470,8 @@ $("page").addEventListener("click", function(e){
     renderPage();
     return;
   }
+  if(visibilitySaving && e.target.closest(".cardadmin")) return;
+  if((t=e.target.closest("[data-visibility]"))) return toggleProductVisibility(t.getAttribute("data-visibility"), t.getAttribute("data-hide")==="true");
   if((t=e.target.closest("[data-edit]"))) return openProduct(t.getAttribute("data-edit"));
   if((t=e.target.closest("[data-del]"))) return delProduct(t.getAttribute("data-del"));
   if((t=e.target.closest("[data-dup]"))) return dupProduct(t.getAttribute("data-dup"));
@@ -3486,6 +3501,7 @@ window.addEventListener("hashchange", function(){
 });
 
 function countClick(pid, lid){
+  if(visibilitySaving) return;
   for(var i=0;i<state.products.length;i++){
     if(state.products[i].id!==pid) continue;
     var ls=state.products[i].links;
@@ -3561,6 +3577,10 @@ $("adminBar").addEventListener("click", function(e){
   var b=e.target.closest("[data-act]"); if(!b) return;
   var act=b.getAttribute("data-act");
   if(act==="newProduct") openProduct(null);
+  else if(act==="hiddenProducts" && isAdmin && isLoggedIn()){
+    query=""; $("q").value=""; $("qClear").style.display="none";
+    if(route.view==="hidden" && route.page===1) renderPage(); else go("hidden");
+  }
   else if(act==="cats") openCats();
   else if(act==="settings") openSettings();
   else if(act==="stats") openStats();
@@ -4043,6 +4063,7 @@ var BOOKMARKLET = "javascript:(function(){"+
 });
 
 $("btnSaveProduct").addEventListener("click", function(){
+  if(visibilitySaving){ toast("상품 공개 상태를 저장 중입니다. 잠시 후 다시 시도해 주세요."); return; }
   var name=$("f_name").value.trim();
   // 색상만 있는 제품(브랜드 + 호수만 아는 경우)도 허용한다
   if(!name && !$("f_color").value.trim()){
@@ -4102,6 +4123,7 @@ $("btnSaveProduct").addEventListener("click", function(){
         // id/createdAt/clicks 만 지키고 나머지는 통째로 덮어쓴다.
         data.id = p.id;
         data.createdAt = p.createdAt;
+        if(p.hidden===true) data.hidden=true;
         state.products[i] = data;
         saved = data;
         break;
@@ -4118,6 +4140,45 @@ $("btnSaveProduct").addEventListener("click", function(){
     toast(editingId?"수정했습니다.":"제품을 추가했습니다.");
   }
 });
+
+var visibilitySaving=false;
+function toggleProductVisibility(id, hidden){
+  if(!isAdmin || !isLoggedIn()) return;
+  if(visibilitySaving || pendingOps.length || syncState==="saving"){
+    toast("저장이 끝난 뒤 다시 시도해 주세요."); return;
+  }
+  if(!cloudReady || !cloudRowExists){
+    toast("서버에 연결한 뒤 다시 시도해 주세요."); return;
+  }
+  visibilitySaving=true;
+  setSync("saving");
+  return registrationRequest(function(signal){
+    return cloudFetchState(signal).then(function(row){
+      var products=row && row.data && row.data.products;
+      var product=Array.isArray(products) && products.find(function(p){ return p.id===id; });
+      if(!product) throw new Error("서버에서 제품을 찾지 못했습니다.");
+      if((product.hidden===true)===hidden) return row;
+      if(hidden) product.hidden=true;
+      else delete product.hidden;
+      return cloudRpc("hub_save_product", {p:product}, signal).then(function(){
+        return cloudFetchState(signal);
+      });
+    });
+  }).then(function(row){
+    var products=row && row.data && row.data.products;
+    var saved=Array.isArray(products) && products.find(function(p){ return p.id===id; });
+    if(!saved || (saved.hidden===true)!==hidden) throw new Error("서버에 저장된 공개 상태를 확인하지 못했습니다.");
+    state=normalize(row.data);
+    lastRev=typeof row.rev==="number" ? row.rev : null;
+    saveLocalOnly();
+    renderAll();
+    setSync("saved",timeAgoLabel());
+    toast(hidden?"제품을 숨겼습니다.":"제품을 다시 게시했습니다.");
+  }).catch(function(){
+    setSync("error","공개 상태 확인 필요");
+    toast("공개 상태를 확인하지 못했습니다. 새로고침한 뒤 다시 확인해 주세요.");
+  }).finally(function(){ visibilitySaving=false; });
+}
 
 function delProduct(id){
   var p=null;
@@ -4543,7 +4604,7 @@ function anyModalOpen(){ return !!document.querySelector(".overlay.on"); }
 
 function pollCloud(){
   if(!cloudEnabled() || !cloudRowExists) return;
-  if(pendingOps.length || anyModalOpen()) return;
+  if(visibilitySaving || pendingOps.length || anyModalOpen()) return;
   fetch(CLOUD.url + "/rest/v1/hub_state?id=eq.1&select=rev", {
     headers: cloudHeaders(false), cache:"no-store"
   }).then(function(r){ return r.ok ? r.json() : null; }).then(function(rows){
@@ -4554,7 +4615,7 @@ function pollCloud(){
     lastRev = rev;
     return cloudFetchState().then(function(row){
       if(!row || !row.data) return;
-      if(pendingOps.length || anyModalOpen()) return;  // 그사이 편집을 시작했으면 취소
+      if(visibilitySaving || pendingOps.length || anyModalOpen()) return;  // 그사이 편집을 시작했으면 취소
       state = normalize(row.data);
       saveLocalOnly();
       renderAll();
@@ -4646,6 +4707,8 @@ if(window.CoupangRegistrationUI && window.CoupangRegistrationCore){
           var duplicate=window.CoupangRegistrationCore.findDuplicates({sourceUrl:product.srcUrl,affiliateUrl:product.links.filter(function(l){return window.CoupangRegistrationCore.validateAffiliateUrl(l.url);})[0].url},row.data.products)
             .some(function(p){return p.id!==product.id;});
           if(duplicate) throw new Error("같은 쿠팡 상품이 이미 등록되어 있습니다. 기존 제품을 수정해 주세요.");
+          var existing=row.data.products.find(function(p){ return p.id===product.id; });
+          if(existing && existing.hidden===true) product.hidden=true;
           return cloudRpc("hub_save_product", {p:product}, signal);
         });
       });
